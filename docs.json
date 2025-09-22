@@ -48,6 +48,35 @@
         ]
       },
       {
+        "tab": "Backend Architecture",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "backend/architecture-overview",
+              "backend/project-structure"
+            ]
+          },
+          {
+            "group": "Development Standards",
+            "pages": [
+              "backend/coding-standards",
+              "backend/database-architecture",
+              "backend/api-layer-architecture",
+              "backend/service-layer-architecture"
+            ]
+          },
+          {
+            "group": "Security & Testing",
+            "pages": [
+              "backend/security-guidelines",
+              "backend/testing-strategy",
+              "backend/configuration-management"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "API reference",
         "groups": [
           {

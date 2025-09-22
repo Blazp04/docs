@@ -1,0 +1,762 @@
+---
+title: "Security Guidelines"
+description: "Authentication, authorization, input validation, and security monitoring best practices for the SkyGuard backend"
+---
+
+# Security Guidelines
+
+This guide covers comprehensive security practices for the SkyGuard backend, including authentication, authorization, input validation, and security monitoring.
+
+## 🔒 Authentication & Authorization
+
+### JWT Token Management
+
+Our authentication system uses JSON Web Tokens (JWT) with access and refresh token rotation for maximum security.
+
+```typescript
+// Token configuration
+const JWT_CONFIG = {
+  ACCESS_TOKEN_EXPIRATION: '15m',
+  REFRESH_TOKEN_EXPIRATION: '7d',
+  ALGORITHM: 'HS256',
+  ISSUER: 'skyguard-api',
+  AUDIENCE: 'skyguard-client'
+};
+
+// Token generation with proper claims
+function generateAccessToken(user: User): string {
+  const payload = {
+    userId: user.Id,
+    email: user.Email,
+    role: user.Role,
+    organizationId: user.OrganizationId,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + (15 * 60), // 15 minutes
+    iss: JWT_CONFIG.ISSUER,
+    aud: JWT_CONFIG.AUDIENCE
+  };
+
+  return jwt.sign(payload, process.env.JWT_SECRET!, {
+    algorithm: JWT_CONFIG.ALGORITHM
+  });
+}
+
+// Secure token verification
+async function verifyToken(token: string): Promise<User | null> {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!, {
+      algorithms: [JWT_CONFIG.ALGORITHM],
+      issuer: JWT_CONFIG.ISSUER,
+      audience: JWT_CONFIG.AUDIENCE
+    }) as JwtPayload;
+
+    // Verify user still exists and is active
+    const userRepository = new UserRepository();
+    const user = await userRepository.findById(decoded.userId);
+    
+    if (!user || !user.IsActive) {
+      return null;
+    }
+
+    return user;
+  } catch (error) {
+    return null;
+  }
+}
+```
+
+### Refresh Token Security
+
+<CodeGroup>
+```typescript Token Generation
+// Secure refresh token implementation
+export class RefreshTokenService extends BaseService {
+  private refreshTokenRepository: RefreshTokenRepository;
+
+  constructor() {
+    super();
+    this.refreshTokenRepository = new RefreshTokenRepository();
+  }
+
+  async generateRefreshToken(user: User): Promise<string> {
+    // Generate cryptographically secure token
+    const token = crypto.randomBytes(32).toString('hex');
+    
+    // Store in database with expiration
+    await this.refreshTokenRepository.create({
+      Token: await this.hashToken(token), // Hash before storing
+      UserId: user.Id,
+      ExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      IsActive: true,
+      CreatedAt: new Date()
+    });
+
+    return token;
+  }
+
+  private async hashToken(token: string): Promise<string> {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+}
+```
+
+```typescript Token Validation
+async validateRefreshToken(token: string): Promise<User | null> {
+  try {
+    const hashedToken = await this.hashToken(token);
+    
+    // Find token in database
+    const refreshToken = await this.refreshTokenRepository.findByToken(hashedToken);
+    
+    if (!refreshToken || !refreshToken.IsActive || refreshToken.ExpiresAt < new Date()) {
+      return null;
+    }
+
+    // Get associated user
+    const userRepository = new UserRepository();
+    const user = await userRepository.findById(refreshToken.UserId);
+    
+    if (!user || !user.IsActive) {
+      return null;
+    }
+
+    return user;
+  } catch (error) {
+    this.logError('Validate refresh token', error as Error);
+    return null;
+  }
+}
+```
+
+```typescript Token Rotation
+async rotateRefreshToken(oldToken: string): Promise<{ user: User; newToken: string } | null> {
+  const user = await this.validateRefreshToken(oldToken);
+  
+  if (!user) {
+    return null;
+  }
+
+  // Invalidate old token
+  await this.invalidateRefreshToken(oldToken);
+  
+  // Generate new token
+  const newToken = await this.generateRefreshToken(user);
+  
+  return { user, newToken };
+}
+```
+</CodeGroup>
+
+### Role-Based Access Control (RBAC)
+
+<Tabs>
+  <Tab title="Permission Middleware">
+    ```typescript
+    // Permission checking middleware
+    export function authorize(requiredPermissions: string[]) {
+      return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+        const user = request.user;
+        
+        if (!user) {
+          reply.status(401).send({
+            success: false,
+            message: 'Authentication required'
+          });
+          return;
+        }
+
+        // SuperAdmin bypasses all permission checks
+        if (user.Role === UserRole.SUPER_ADMIN) {
+          return;
+        }
+
+        // Get user permissions
+        const permissionService = new PermissionService();
+        const userPermissions = await permissionService.getUserPermissions(user.Id);
+
+        // Check if user has all required permissions
+        const hasAllPermissions = requiredPermissions.every(permission =>
+          userPermissions.includes(permission)
+        );
+
+        if (!hasAllPermissions) {
+          reply.status(403).send({
+            success: false,
+            message: 'Insufficient permissions',
+            error: {
+              code: 'INSUFFICIENT_PERMISSIONS',
+              required: requiredPermissions,
+              userPermissions: userPermissions
+            }
+          });
+          return;
+        }
+      };
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Organization Scoping">
+    ```typescript
+    // Organization scope middleware
+    export async function organizationScope(
+      request: FastifyRequest,
+      reply: FastifyReply
+    ): Promise<void> {
+      const user = request.user;
+      
+      if (!user) {
+        reply.status(401).send({
+          success: false,
+          message: 'Authentication required'
+        });
+        return;
+      }
+
+      // SuperAdmin can access all organizations
+      if (user.Role === UserRole.SUPER_ADMIN) {
+        return;
+      }
+
+      // Admin and User roles are scoped to their organization
+      if (user.Role === UserRole.ADMIN || user.Role === UserRole.USER) {
+        if (!user.OrganizationId) {
+          reply.status(403).send({
+            success: false,
+            message: 'User not associated with any organization'
+          });
+          return;
+        }
+
+        // Add organization scope to request context
+        request.organizationId = user.OrganizationId;
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## 🛡️ Input Validation & Sanitization
+
+### SQL Injection Prevention
+
+<Warning>
+**CRITICAL**: Always use parameterized queries. Never use string concatenation for SQL queries.
+</Warning>
+
+<CodeGroup>
+```typescript Good Example
+// ✅ GOOD: Always use parameterized queries with Drizzle ORM
+async findUsersByRole(role: UserRole, organizationId?: number): Promise<User[]> {
+  return await db
+    .select()
+    .from(users)
+    .where(and(
+      eq(users.role, role),
+      organizationId ? eq(users.organizationId, organizationId) : undefined,
+      eq(users.isActive, true)
+    ))
+    .orderBy(desc(users.createdAt));
+}
+```
+
+```typescript Bad Example
+// ❌ BAD: Never use string concatenation
+async findUsersByRole(role: string): Promise<User[]> {
+  const result = await this.pool.request()
+    .query(`SELECT * FROM Users WHERE Role = '${role}'`); // VULNERABLE!
+
+  return result.recordset;
+}
+```
+</CodeGroup>
+
+### Input Sanitization
+
+```typescript
+// Input sanitization utility
+export class SecurityUtils {
+  /**
+   * Sanitize string input to prevent XSS
+   */
+  static sanitizeString(input: string): string {
+    if (!input) return '';
+    
+    return input
+      .replace(/[<>]/g, '') // Remove potential HTML tags
+      .replace(/['";]/g, '') // Remove SQL injection chars
+      .trim()
+      .substring(0, 1000); // Limit length
+  }
+
+  /**
+   * Validate and sanitize email
+   */
+  static sanitizeEmail(email: string): string | null {
+    if (!email) return null;
+    
+    const sanitized = email.toLowerCase().trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    
+    return emailRegex.test(sanitized) ? sanitized : null;
+  }
+
+  /**
+   * Validate numeric input
+   */
+  static validateId(id: any): number | null {
+    const parsed = parseInt(id, 10);
+    return isNaN(parsed) || parsed <= 0 ? null : parsed;
+  }
+
+  /**
+   * Validate and sanitize pagination parameters
+   */
+  static sanitizePagination(page?: any, limit?: any): { page: number; limit: number } {
+    const safePage = Math.max(1, parseInt(page, 10) || 1);
+    const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
+    
+    return { page: safePage, limit: safeLimit };
+  }
+}
+```
+
+### Usage in Handlers
+
+```typescript
+// Usage in handlers
+export class UserHandler {
+  async getUsers(
+    request: FastifyRequest<{ 
+      Querystring: { page?: string; limit?: string; search?: string } 
+    }>,
+    reply: FastifyReply
+  ): Promise<void> {
+    try {
+      // Sanitize inputs
+      const { page, limit } = SecurityUtils.sanitizePagination(
+        request.query.page,
+        request.query.limit
+      );
+      
+      const search = request.query.search 
+        ? SecurityUtils.sanitizeString(request.query.search)
+        : undefined;
+
+      const userService = new UserService();
+      const result = await userService.getUsers(
+        { page, limit, search },
+        request.user
+      );
+
+      reply.status(200).send(result);
+    } catch (error) {
+      request.log.error('Error in getUsers:', error);
+      reply.status(500).send({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+  }
+}
+```
+
+## 🔐 Password Security
+
+### Password Hashing
+
+```typescript
+// Secure password hashing using bcrypt
+import bcrypt from 'bcryptjs';
+
+export class PasswordService {
+  private static readonly SALT_ROUNDS = 12;
+
+  /**
+   * Hash password with secure salt rounds
+   */
+  static async hashPassword(password: string): Promise<string> {
+    return bcrypt.hash(password, this.SALT_ROUNDS);
+  }
+
+  /**
+   * Verify password against hash
+   */
+  static async verifyPassword(password: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(password, hash);
+  }
+
+  /**
+   * Validate password strength
+   */
+  static validatePasswordStrength(password: string): {
+    isValid: boolean;
+    errors: string[];
+    score: number;
+  } {
+    const errors: string[] = [];
+    let score = 0;
+
+    // Length check
+    if (password.length < 8) {
+      errors.push('Password must be at least 8 characters long');
+    } else if (password.length >= 12) {
+      score += 2;
+    } else {
+      score += 1;
+    }
+
+    // Character type checks
+    if (!/(?=.*[a-z])/.test(password)) {
+      errors.push('Password must contain at least one lowercase letter');
+    } else {
+      score += 1;
+    }
+
+    if (!/(?=.*[A-Z])/.test(password)) {
+      errors.push('Password must contain at least one uppercase letter');
+    } else {
+      score += 1;
+    }
+
+    if (!/(?=.*\d)/.test(password)) {
+      errors.push('Password must contain at least one number');
+    } else {
+      score += 1;
+    }
+
+    if (!/(?=.*[@$!%*?&])/.test(password)) {
+      errors.push('Password must contain at least one special character');
+    } else {
+      score += 1;
+    }
+
+    // Common password check
+    if (this.isCommonPassword(password)) {
+      errors.push('Password is too common, please choose a stronger password');
+      score -= 2;
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      score: Math.max(0, score)
+    };
+  }
+
+  private static isCommonPassword(password: string): boolean {
+    const commonPasswords = [
+      'password', '123456', '12345678', 'qwerty', 'abc123',
+      'password123', 'admin', 'letmein', 'welcome', 'monkey'
+    ];
+
+    return commonPasswords.includes(password.toLowerCase());
+  }
+}
+```
+
+### Password Reset Security
+
+<AccordionGroup>
+  <Accordion title="Generate Reset Token">
+    ```typescript
+    /**
+     * Generate secure password reset token
+     */
+    async generateResetToken(email: string): Promise<ApiResponse<boolean>> {
+      try {
+        const userRepository = new UserRepository();
+        const user = await userRepository.findByEmail(email);
+
+        if (!user) {
+          // Don't reveal if email exists - return success anyway
+          return {
+            success: true,
+            data: true,
+            message: 'If the email exists, a reset link has been sent'
+          };
+        }
+
+        // Generate secure token
+        const token = crypto.randomBytes(32).toString('hex');
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
+        // Store reset request
+        await this.passwordResetRepository.create({
+          UserId: user.Id,
+          Token: hashedToken,
+          ExpiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
+          IsUsed: false,
+          CreatedAt: new Date()
+        });
+
+        // Send email (implement email service)
+        await this.sendResetEmail(user.Email, token);
+
+        return {
+          success: true,
+          data: true,
+          message: 'Password reset link has been sent to your email'
+        };
+      } catch (error) {
+        this.logError('Generate reset token', error as Error);
+        return {
+          success: false,
+          message: 'Failed to generate reset token'
+        };
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Reset Password">
+    ```typescript
+    /**
+     * Reset password with token
+     */
+    async resetPassword(token: string, newPassword: string): Promise<ApiResponse<boolean>> {
+      try {
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+        
+        // Find valid reset request
+        const resetRequest = await this.passwordResetRepository.findValidToken(hashedToken);
+        
+        if (!resetRequest || resetRequest.ExpiresAt < new Date() || resetRequest.IsUsed) {
+          return {
+            success: false,
+            message: 'Invalid or expired reset token'
+          };
+        }
+
+        // Validate new password
+        const passwordValidation = PasswordService.validatePasswordStrength(newPassword);
+        if (!passwordValidation.isValid) {
+          return {
+            success: false,
+            message: 'Password does not meet security requirements',
+            errors: passwordValidation.errors
+          };
+        }
+
+        // Hash new password
+        const hashedPassword = await PasswordService.hashPassword(newPassword);
+
+        // Update user password
+        const userRepository = new UserRepository();
+        await userRepository.update(resetRequest.UserId, {
+          Password: hashedPassword,
+          UpdatedAt: new Date()
+        });
+
+        // Mark reset token as used
+        await this.passwordResetRepository.update(resetRequest.Id, {
+          IsUsed: true,
+          UsedAt: new Date()
+        });
+
+        return {
+          success: true,
+          data: true,
+          message: 'Password has been reset successfully'
+        };
+      } catch (error) {
+        this.logError('Reset password', error as Error);
+        return {
+          success: false,
+          message: 'Failed to reset password'
+        };
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## 🚨 Security Monitoring
+
+### Audit Logging
+
+```typescript
+// Security audit logging
+export class SecurityAuditService extends BaseService {
+  private auditRepository: SecurityAuditRepository;
+
+  constructor() {
+    super();
+    this.auditRepository = new SecurityAuditRepository();
+  }
+
+  async logSecurityEvent(event: SecurityEvent): Promise<void> {
+    try {
+      await this.auditRepository.create({
+        EventType: event.type,
+        UserId: event.userId,
+        IpAddress: event.ipAddress,
+        UserAgent: event.userAgent,
+        Resource: event.resource,
+        Action: event.action,
+        Success: event.success,
+        Details: JSON.stringify(event.details),
+        CreatedAt: new Date()
+      });
+
+      // Alert on critical security events
+      if (this.isCriticalEvent(event)) {
+        await this.sendSecurityAlert(event);
+      }
+    } catch (error) {
+      this.logError('Log security event', error as Error);
+    }
+  }
+
+  private isCriticalEvent(event: SecurityEvent): boolean {
+    const criticalEvents = [
+      'FAILED_LOGIN_ATTEMPT',
+      'PERMISSION_DENIED',
+      'INVALID_TOKEN',
+      'PASSWORD_RESET_REQUESTED',
+      'ROLE_ESCALATION_ATTEMPT'
+    ];
+
+    return criticalEvents.includes(event.type);
+  }
+
+  private async sendSecurityAlert(event: SecurityEvent): Promise<void> {
+    // Implement security alert mechanism (email, Slack, etc.)
+    console.warn('SECURITY ALERT:', event);
+  }
+}
+
+// Usage in middleware
+export async function auditMiddleware(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  const securityAudit = new SecurityAuditService();
+  
+  // Log request
+  await securityAudit.logSecurityEvent({
+    type: 'API_REQUEST',
+    userId: request.user?.Id,
+    ipAddress: request.ip,
+    userAgent: request.headers['user-agent'],
+    resource: request.url,
+    action: request.method,
+    success: true,
+    details: {
+      timestamp: new Date().toISOString(),
+      endpoint: request.url
+    }
+  });
+}
+```
+
+### Rate Limiting
+
+```typescript
+// Rate limiting implementation
+import rateLimit from '@fastify/rate-limit';
+
+// Configure rate limiting
+export const rateLimitConfig = {
+  global: false, // Don't apply to all routes
+  max: 100, // Max requests per window
+  timeWindow: '15 minutes',
+  skipSuccessfulRequests: false,
+  skipOnError: false,
+  keyGenerator: (request: FastifyRequest) => {
+    // Use user ID if authenticated, otherwise IP
+    return request.user?.Id?.toString() || request.ip;
+  },
+  errorResponseBuilder: (request: FastifyRequest, context: any) => {
+    return {
+      success: false,
+      message: 'Too many requests, please try again later',
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: context.retryAfter
+      }
+    };
+  }
+};
+
+// Stricter rate limiting for auth endpoints
+export const authRateLimitConfig = {
+  ...rateLimitConfig,
+  max: 5, // Only 5 login attempts per window
+  timeWindow: '15 minutes',
+  keyGenerator: (request: FastifyRequest) => {
+    // Rate limit by IP for auth endpoints
+    return request.ip;
+  }
+};
+
+// Usage in routes
+fastify.register(rateLimit, rateLimitConfig);
+
+// Apply stricter limits to auth routes
+fastify.register(async function (fastify) {
+  await fastify.register(rateLimit, authRateLimitConfig);
+  
+  fastify.post('/auth/login', {
+    handler: authHandler.login.bind(authHandler)
+  });
+});
+```
+
+## ✅ Security Checklist
+
+<Tip>
+Use this comprehensive checklist to ensure security best practices are followed:
+</Tip>
+
+### Authentication & Authorization
+- [ ] Use JWT tokens with proper expiration times
+- [ ] Implement refresh token rotation
+- [ ] Hash refresh tokens before storing in database
+- [ ] Validate token signatures and claims
+- [ ] Check user status (active/inactive) on each request
+- [ ] Implement role-based access control (RBAC)
+- [ ] Use organization-based scoping where appropriate
+- [ ] Log all authentication attempts
+
+### Input Validation
+- [ ] Use parameterized queries exclusively
+- [ ] Sanitize all user inputs
+- [ ] Validate input formats (email, phone, etc.)
+- [ ] Implement length limits on all inputs
+- [ ] Use allow-lists rather than deny-lists
+- [ ] Validate file uploads if applicable
+
+### Password Security
+- [ ] Use bcrypt with minimum 12 salt rounds
+- [ ] Implement password strength requirements
+- [ ] Check against common password lists
+- [ ] Secure password reset flow with time-limited tokens
+- [ ] Never store passwords in plain text
+- [ ] Force password changes after reset
+
+### Data Protection
+- [ ] Use HTTPS in production
+- [ ] Implement proper CORS policies
+- [ ] Set security headers (HSTS, CSP, etc.)
+- [ ] Encrypt sensitive data at rest
+- [ ] Use environment variables for secrets
+- [ ] Implement data retention policies
+
+### Monitoring & Logging
+- [ ] Log all security-relevant events
+- [ ] Implement rate limiting
+- [ ] Monitor for suspicious patterns
+- [ ] Set up security alerts
+- [ ] Regular security audit logs review
+- [ ] Implement intrusion detection
+
+### Infrastructure Security
+- [ ] Keep dependencies updated
+- [ ] Use security scanners in CI/CD
+- [ ] Implement network segmentation
+- [ ] Regular security assessments
+- [ ] Backup and recovery procedures
+- [ ] Incident response plan
+
+This comprehensive security framework ensures that the SkyGuard backend maintains the highest security standards while providing a robust and reliable authentication and authorization system.

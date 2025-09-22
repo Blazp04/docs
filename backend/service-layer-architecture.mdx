@@ -1,0 +1,764 @@
+---
+title: "Service Layer Architecture"
+description: "Business logic organization, transaction management, and service-to-service communication patterns"
+---
+
+# Service Layer Architecture
+
+This guide covers the service layer design principles, business logic organization, transaction management, and communication patterns for the SkyGuard backend.
+
+## 🏗️ Service Layer Principles
+
+### Responsibility Separation
+
+The service layer acts as the orchestrator between the API layer and the database layer, with these core responsibilities:
+
+- **Business Logic**: Services contain all domain-specific business rules
+- **Data Access**: Services orchestrate repository calls but don't handle SQL
+- **Authentication**: Services validate permissions and user context
+- **Transaction Management**: Services handle multi-step operations
+- **Integration**: Services communicate with external APIs and systems
+
+### Service Structure
+
+```typescript
+export abstract class BaseService {
+  protected logger: Logger;
+
+  constructor() {
+    this.logger = getLogger(this.constructor.name);
+  }
+
+  protected logOperation(operation: string, userId?: number): void {
+    this.logger.info(`${operation}${userId ? ` by user ${userId}` : ''}`);
+  }
+
+  protected logError(operation: string, error: Error, userId?: number): void {
+    this.logger.error(`${operation} failed${userId ? ` for user ${userId}` : ''}:`, error);
+  }
+}
+```
+
+## 🔧 Service Implementation Pattern
+
+### Standard Service Structure
+
+```typescript
+// src/core/services/UserService.ts
+import { BaseService } from './BaseService';
+import { UserRepository } from '../database/repositories/UserRepository';
+import { OrganizationRepository } from '../database/repositories/OrganizationRepository';
+import { User, UserRole } from '../models/entities/User';
+import { CreateUserDto, UpdateUserDto } from '../../dto/user.dto';
+import { ApiResponse, PaginationOptions } from '../types';
+import { hashPassword, validatePassword } from '../utils/encryption';
+
+export class UserService extends BaseService {
+  private userRepository: UserRepository;
+  private organizationRepository: OrganizationRepository;
+
+  constructor() {
+    super();
+    this.userRepository = new UserRepository();
+    this.organizationRepository = new OrganizationRepository();
+  }
+
+  /**
+   * Get paginated list of users with proper authorization
+   */
+  async getUsers(
+    options: PaginationOptions & { role?: UserRole },
+    currentUser: User
+  ): Promise<ApiResponse<User[]>> {
+    try {
+      this.logOperation('Get users', currentUser.Id);
+
+      // Authorization: SuperAdmin can see all, Admin can see org users, User can see self only
+      if (currentUser.Role === UserRole.USER) {
+        return {
+          success: false,
+          message: 'Insufficient permissions to list users'
+        };
+      }
+
+      // Apply organization scope for Admin users
+      const scopedOptions = currentUser.Role === UserRole.ADMIN 
+        ? { ...options, organizationId: currentUser.OrganizationId }
+        : options;
+
+      const result = await this.userRepository.findPaginated(scopedOptions);
+
+      return {
+        success: true,
+        data: result.data,
+        meta: {
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages
+        }
+      };
+    } catch (error) {
+      this.logError('Get users', error as Error, currentUser.Id);
+      return {
+        success: false,
+        message: 'Failed to retrieve users'
+      };
+    }
+  }
+}
+```
+
+### Business Logic Implementation
+
+<CodeGroup>
+```typescript Create User Logic
+/**
+ * Create new user with validation and authorization
+ */
+async createUser(userData: CreateUserDto, currentUser: User): Promise<ApiResponse<User>> {
+  try {
+    this.logOperation('Create user', currentUser.Id);
+
+    // Authorization: Only SuperAdmin and Admin can create users
+    if (currentUser.Role === UserRole.USER) {
+      return {
+        success: false,
+        message: 'Insufficient permissions to create users'
+      };
+    }
+
+    // Validation: Admin can only create users in their organization
+    if (currentUser.Role === UserRole.ADMIN) {
+      if (!userData.OrganizationId || userData.OrganizationId !== currentUser.OrganizationId) {
+        return {
+          success: false,
+          message: 'Admin users can only create users in their own organization'
+        };
+      }
+    }
+
+    // Check if user already exists
+    const existingUser = await this.userRepository.findByEmail(userData.Email);
+    if (existingUser) {
+      return {
+        success: false,
+        message: 'User with this email already exists'
+      };
+    }
+
+    // Validate organization exists (for non-SuperAdmin users)
+    if (userData.OrganizationId) {
+      const organization = await this.organizationRepository.findById(userData.OrganizationId);
+      if (!organization) {
+        return {
+          success: false,
+          message: 'Organization not found'
+        };
+      }
+    }
+
+    // Hash password
+    const hashedPassword = await hashPassword(userData.Password);
+
+    // Create user
+    const newUser = await this.userRepository.create({
+      ...userData,
+      Password: hashedPassword
+    });
+
+    // Remove password from response
+    const { Password, ...userResponse } = newUser;
+
+    return {
+      success: true,
+      data: userResponse as User,
+      message: 'User created successfully'
+    };
+  } catch (error) {
+    this.logError('Create user', error as Error, currentUser.Id);
+    return {
+      success: false,
+      message: 'Failed to create user'
+    };
+  }
+}
+```
+
+```typescript Update User Logic
+/**
+ * Update user with authorization and validation
+ */
+async updateUser(
+  userId: number, 
+  updateData: UpdateUserDto, 
+  currentUser: User
+): Promise<ApiResponse<User>> {
+  try {
+    this.logOperation(`Update user ${userId}`, currentUser.Id);
+
+    const existingUser = await this.userRepository.findById(userId);
+    if (!existingUser) {
+      return {
+        success: false,
+        message: 'User not found'
+      };
+    }
+
+    // Authorization check
+    if (!this.canModifyUser(existingUser, currentUser)) {
+      return {
+        success: false,
+        message: 'Insufficient permissions to modify this user'
+      };
+    }
+
+    // Prepare update data
+    const updatePayload: Partial<User> = { ...updateData };
+
+    // Hash password if provided
+    if (updateData.Password) {
+      updatePayload.Password = await hashPassword(updateData.Password);
+    }
+
+    // Prevent role escalation
+    if (updateData.Role && !this.canAssignRole(updateData.Role, currentUser)) {
+      return {
+        success: false,
+        message: 'Insufficient permissions to assign this role'
+      };
+    }
+
+    const updatedUser = await this.userRepository.update(userId, updatePayload);
+    
+    if (!updatedUser) {
+      return {
+        success: false,
+        message: 'Failed to update user'
+      };
+    }
+
+    // Remove password from response
+    const { Password, ...userResponse } = updatedUser;
+
+    return {
+      success: true,
+      data: userResponse as User,
+      message: 'User updated successfully'
+    };
+  } catch (error) {
+    this.logError(`Update user ${userId}`, error as Error, currentUser.Id);
+    return {
+      success: false,
+      message: 'Failed to update user'
+    };
+  }
+}
+```
+</CodeGroup>
+
+## 🔐 Authorization Patterns
+
+### Permission-Based Authorization
+
+```typescript
+// Private helper methods for authorization
+private canAccessUser(targetUser: User, currentUser: User): boolean {
+  // SuperAdmin can access anyone
+  if (currentUser.Role === UserRole.SUPER_ADMIN) {
+    return true;
+  }
+
+  // Admin can access users in their organization
+  if (currentUser.Role === UserRole.ADMIN) {
+    return targetUser.OrganizationId === currentUser.OrganizationId;
+  }
+
+  // Users can only access themselves
+  return targetUser.Id === currentUser.Id;
+}
+
+private canModifyUser(targetUser: User, currentUser: User): boolean {
+  // SuperAdmin can modify anyone except other SuperAdmins
+  if (currentUser.Role === UserRole.SUPER_ADMIN) {
+    return targetUser.Role !== UserRole.SUPER_ADMIN || targetUser.Id === currentUser.Id;
+  }
+
+  // Admin can modify users in their organization (except SuperAdmins and other Admins)
+  if (currentUser.Role === UserRole.ADMIN) {
+    return targetUser.OrganizationId === currentUser.OrganizationId &&
+           targetUser.Role === UserRole.USER;
+  }
+
+  // Users can only modify themselves
+  return targetUser.Id === currentUser.Id;
+}
+
+private canAssignRole(role: UserRole, currentUser: User): boolean {
+  // SuperAdmin can assign any role
+  if (currentUser.Role === UserRole.SUPER_ADMIN) {
+    return true;
+  }
+
+  // Admin can only assign User role
+  if (currentUser.Role === UserRole.ADMIN) {
+    return role === UserRole.USER;
+  }
+
+  // Users cannot assign roles
+  return false;
+}
+```
+
+### Resource Scoping
+
+<AccordionGroup>
+  <Accordion title="Organization-Based Scoping">
+    ```typescript
+    async getUsers(options: PaginationOptions, currentUser: User): Promise<ApiResponse<User[]>> {
+      // Apply organization scope for Admin users
+      const scopedOptions = currentUser.Role === UserRole.ADMIN 
+        ? { ...options, organizationId: currentUser.OrganizationId }
+        : options;
+
+      const result = await this.userRepository.findPaginated(scopedOptions);
+      
+      return {
+        success: true,
+        data: result.data,
+        meta: result.meta
+      };
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="User-Based Filtering">
+    ```typescript
+    async getUserProfile(targetUserId: number, currentUser: User): Promise<ApiResponse<User>> {
+      // Users can only access their own profile unless they have elevated permissions
+      if (currentUser.Role === UserRole.USER && targetUserId !== currentUser.Id) {
+        return {
+          success: false,
+          message: 'Access denied'
+        };
+      }
+      
+      const user = await this.userRepository.findById(targetUserId);
+      return {
+        success: true,
+        data: user
+      };
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## 🔄 Transaction Management
+
+### Multi-Step Operations
+
+```typescript
+// src/core/services/OrganizationService.ts
+export class OrganizationService extends BaseService {
+  /**
+   * Create organization with admin user in a transaction
+   */
+  async createOrganization(
+    orgData: CreateOrganizationDto,
+    currentUser: User
+  ): Promise<ApiResponse<{ organization: Organization; admin: User }>> {
+    try {
+      const result = await db.transaction(async (tx) => {
+        this.logOperation('Create organization with admin', currentUser.Id);
+
+        // Step 1: Create the organization
+        const [organization] = await tx
+          .insert(organizations)
+          .values({
+            Name: orgData.Name,
+            Description: orgData.Description,
+            IsActive: true
+          })
+          .returning();
+
+        // Step 2: Create admin user
+        const hashedPassword = await hashPassword(orgData.AdminPassword);
+        const [adminUser] = await tx
+          .insert(users)
+          .values({
+            Email: orgData.AdminEmail,
+            Password: hashedPassword,
+            FirstName: orgData.AdminFirstName,
+            LastName: orgData.AdminLastName,
+            Role: UserRole.ADMIN,
+            OrganizationId: organization.Id,
+            IsActive: true
+          })
+          .returning();
+
+        // Step 3: Update organization with admin ID
+        const [updatedOrganization] = await tx
+          .update(organizations)
+          .set({ AdminId: adminUser.Id })
+          .where(eq(organizations.Id, organization.Id))
+          .returning();
+
+        return { organization: updatedOrganization, admin: adminUser };
+      });
+
+      // Remove password from response
+      const { Password, ...adminResponse } = result.admin;
+
+      return {
+        success: true,
+        data: {
+          organization: result.organization,
+          admin: adminResponse as User
+        },
+        message: 'Organization and admin user created successfully'
+      };
+    } catch (error) {
+      this.logError('Create organization with admin', error as Error, currentUser.Id);
+      
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to create organization'
+      };
+    }
+  }
+}
+```
+
+### Transaction Best Practices
+
+<Tabs>
+  <Tab title="Keep Transactions Short">
+    ```typescript
+    // ✅ GOOD: Short, focused transaction
+    async transferUserToOrganization(userId: number, newOrgId: number): Promise<ApiResponse<User>> {
+      return await db.transaction(async (tx) => {
+        // Update user organization
+        const [user] = await tx
+          .update(users)
+          .set({ OrganizationId: newOrgId })
+          .where(eq(users.Id, userId))
+          .returning();
+
+        // Log the transfer
+        await tx
+          .insert(auditLogs)
+          .values({
+            action: 'user_transfer',
+            userId: userId,
+            oldOrganizationId: user.OrganizationId,
+            newOrganizationId: newOrgId
+          });
+
+        return user;
+      });
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Handle Errors Gracefully">
+    ```typescript
+    // ✅ GOOD: Proper error handling in transactions
+    async complexOperation(data: ComplexData): Promise<ApiResponse<any>> {
+      try {
+        const result = await db.transaction(async (tx) => {
+          // Multiple operations that must succeed together
+          const step1 = await tx.insert(table1).values(data.step1).returning();
+          const step2 = await tx.insert(table2).values(data.step2).returning();
+          
+          // Validate business rules within transaction
+          if (!this.validateBusinessRule(step1[0], step2[0])) {
+            throw new Error('Business rule validation failed');
+          }
+          
+          return { step1: step1[0], step2: step2[0] };
+        });
+
+        return { success: true, data: result };
+      } catch (error) {
+        this.logError('Complex operation', error as Error);
+        return {
+          success: false,
+          message: error instanceof Error ? error.message : 'Operation failed'
+        };
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## 🤝 Service-to-Service Communication
+
+### Dependency Injection Pattern
+
+```typescript
+// src/core/services/AuthService.ts
+export class AuthService extends BaseService {
+  private userService: UserService;
+  private organizationService: OrganizationService;
+  private refreshTokenRepository: RefreshTokenRepository;
+
+  constructor() {
+    super();
+    this.userService = new UserService();
+    this.organizationService = new OrganizationService();
+    this.refreshTokenRepository = new RefreshTokenRepository();
+  }
+
+  /**
+   * Login user and return tokens
+   */
+  async login(credentials: LoginDto): Promise<ApiResponse<AuthResponse>> {
+    try {
+      this.logOperation('User login attempt');
+
+      // Validate credentials through UserService
+      const userResult = await this.userService.validateCredentials(
+        credentials.Email,
+        credentials.Password
+      );
+
+      if (!userResult.success || !userResult.data) {
+        return {
+          success: false,
+          message: 'Invalid email or password'
+        };
+      }
+
+      const user = userResult.data;
+
+      // Generate tokens
+      const accessToken = this.generateAccessToken(user);
+      const refreshToken = this.generateRefreshToken();
+
+      // Store refresh token
+      await this.refreshTokenRepository.create({
+        Token: refreshToken,
+        UserId: user.Id,
+        ExpiresAt: new Date(Date.now() + REFRESH_TOKEN_EXPIRATION),
+        IsActive: true
+      });
+
+      // Update last login time through UserService
+      await this.userService.updateLastLogin(user.Id);
+
+      return {
+        success: true,
+        data: {
+          user: { ...user, Password: undefined }, // Remove password
+          accessToken,
+          refreshToken,
+          expiresIn: ACCESS_TOKEN_EXPIRATION
+        },
+        message: 'Login successful'
+      };
+    } catch (error) {
+      this.logError('User login', error as Error);
+      return {
+        success: false,
+        message: 'Login failed'
+      };
+    }
+  }
+}
+```
+
+### Service Composition
+
+```typescript
+// Complex business operations that involve multiple services
+export class UserManagementService extends BaseService {
+  private userService: UserService;
+  private organizationService: OrganizationService;
+  private notificationService: NotificationService;
+  private auditService: AuditService;
+
+  constructor() {
+    super();
+    this.userService = new UserService();
+    this.organizationService = new OrganizationService();
+    this.notificationService = new NotificationService();
+    this.auditService = new AuditService();
+  }
+
+  /**
+   * Onboard new user with complete setup
+   */
+  async onboardUser(
+    onboardingData: UserOnboardingDto,
+    currentUser: User
+  ): Promise<ApiResponse<OnboardingResult>> {
+    try {
+      this.logOperation('User onboarding', currentUser.Id);
+
+      // Step 1: Create user through UserService
+      const userResult = await this.userService.createUser(onboardingData.user, currentUser);
+      if (!userResult.success) {
+        return userResult;
+      }
+
+      const newUser = userResult.data!;
+
+      // Step 2: Set up user profile
+      const profileResult = await this.userService.createUserProfile(
+        newUser.Id,
+        onboardingData.profile,
+        currentUser
+      );
+
+      // Step 3: Send welcome email
+      await this.notificationService.sendWelcomeEmail(newUser);
+
+      // Step 4: Log onboarding completion
+      await this.auditService.logUserOnboarding(newUser.Id, currentUser.Id);
+
+      return {
+        success: true,
+        data: {
+          user: newUser,
+          profile: profileResult.data,
+          welcomeEmailSent: true
+        },
+        message: 'User onboarded successfully'
+      };
+    } catch (error) {
+      this.logError('User onboarding', error as Error, currentUser.Id);
+      return {
+        success: false,
+        message: 'Onboarding failed'
+      };
+    }
+  }
+}
+```
+
+## 📋 Service Layer Best Practices
+
+### Input Validation
+
+<CodeGroup>
+```typescript Business Rule Validation
+// ✅ GOOD: Validate business rules in service layer
+async createUser(userData: CreateUserDto, currentUser: User): Promise<ApiResponse<User>> {
+  // 1. Authorization validation
+  if (!this.canCreateUser(currentUser)) {
+    return {
+      success: false,
+      message: 'Insufficient permissions to create users'
+    };
+  }
+
+  // 2. Business rule validation
+  if (userData.Role === UserRole.ADMIN && !userData.OrganizationId) {
+    return {
+      success: false,
+      message: 'Admin users must be assigned to an organization'
+    };
+  }
+
+  // 3. Data consistency validation
+  const existingUser = await this.userRepository.findByEmail(userData.Email);
+  if (existingUser) {
+    return {
+      success: false,
+      message: 'User with this email already exists'
+    };
+  }
+
+  // Proceed with creation...
+}
+```
+
+```typescript Error Handling
+// ✅ GOOD: Comprehensive error handling
+async getUserById(userId: number, currentUser: User): Promise<ApiResponse<User>> {
+  try {
+    this.logOperation(`Get user ${userId}`, currentUser.Id);
+
+    // Validate input
+    if (!userId || userId <= 0) {
+      return {
+        success: false,
+        message: 'Invalid user ID'
+      };
+    }
+
+    const user = await this.userRepository.findById(userId);
+    
+    if (!user) {
+      return {
+        success: false,
+        message: 'User not found'
+      };
+    }
+
+    // Authorization check
+    if (!this.canAccessUser(user, currentUser)) {
+      return {
+        success: false,
+        message: 'Insufficient permissions to access this user'
+      };
+    }
+
+    return {
+      success: true,
+      data: user,
+      message: 'User retrieved successfully'
+    };
+  } catch (error) {
+    this.logError(`Get user ${userId}`, error as Error, currentUser.Id);
+    return {
+      success: false,
+      message: 'Failed to retrieve user'
+    };
+  }
+}
+```
+</CodeGroup>
+
+## ✅ Service Layer Checklist
+
+<Tip>
+Use this checklist when implementing new service methods:
+</Tip>
+
+### Service Implementation
+- [ ] Extend BaseService for logging capabilities
+- [ ] Inject repository dependencies in constructor
+- [ ] Use consistent method naming conventions
+- [ ] Return standardized ApiResponse format
+- [ ] Include comprehensive error handling
+
+### Business Logic
+- [ ] Validate user permissions for operations
+- [ ] Implement business rule validation
+- [ ] Check data consistency before operations
+- [ ] Handle edge cases gracefully
+- [ ] Use transactions for multi-step operations
+
+### Authorization & Security
+- [ ] Validate user authentication context
+- [ ] Check resource-level permissions
+- [ ] Apply organization/role-based scoping
+- [ ] Prevent privilege escalation
+- [ ] Log security-relevant operations
+
+### Error Handling
+- [ ] Use try-catch blocks for all operations
+- [ ] Log errors with appropriate context
+- [ ] Return user-friendly error messages
+- [ ] Handle database constraint violations
+- [ ] Implement graceful degradation
+
+### Testing
+- [ ] Unit tests for business logic
+- [ ] Test authorization scenarios
+- [ ] Test error conditions
+- [ ] Mock repository dependencies
+- [ ] Test transaction rollback scenarios
+
+This service layer architecture ensures proper separation of concerns, robust business logic implementation, and secure, maintainable code that scales with your application needs.

@@ -1,0 +1,595 @@
+---
+title: "Configuration Management"
+description: "Environment variables, secrets management, and configuration validation for the SkyGuard backend"
+---
+
+# Configuration Management
+
+This guide covers configuration management practices for the SkyGuard backend, including environment variables, secrets handling, and configuration validation.
+
+## 🔧 Configuration Architecture
+
+### Configuration Layers
+
+Our configuration system follows a hierarchical approach:
+
+1. **Default Values**: Sensible defaults defined in code
+2. **Environment Files**: `.env` files for development
+3. **Environment Variables**: Production environment variables
+4. **Runtime Overrides**: Dynamic configuration changes
+
+### Configuration File Structure
+
+```typescript
+// src/core/config/index.ts
+import { z } from 'zod';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+// Configuration schema validation
+const configSchema = z.object({
+  // Application
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().default(3000),
+  API_VERSION: z.string().default('v1'),
+  
+  // Database
+  DATABASE_URL: z.string().url(),
+  DB_POOL_MIN: z.coerce.number().default(0),
+  DB_POOL_MAX: z.coerce.number().default(10),
+  DB_CONNECTION_TIMEOUT: z.coerce.number().default(30000),
+  
+  // Security
+  JWT_SECRET: z.string().min(32),
+  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+  JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  BCRYPT_ROUNDS: z.coerce.number().default(12),
+  
+  // Rate Limiting
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000), // 15 minutes
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
+  
+  // CORS
+  CORS_ORIGIN: z.string().default('*'),
+  CORS_CREDENTIALS: z.coerce.boolean().default(true),
+  
+  // Logging
+  LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
+  LOG_FORMAT: z.enum(['json', 'pretty']).default('json'),
+  
+  // External Services
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  
+  // Monitoring
+  ENABLE_METRICS: z.coerce.boolean().default(false),
+  METRICS_PORT: z.coerce.number().default(9090),
+  
+  // File Storage
+  UPLOAD_MAX_SIZE: z.coerce.number().default(10485760), // 10MB
+  UPLOAD_ALLOWED_TYPES: z.string().default('image/jpeg,image/png,application/pdf'),
+});
+
+// Parse and validate configuration
+const parseConfig = () => {
+  try {
+    const config = configSchema.parse(process.env);
+    return config;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const issues = error.issues.map(issue => 
+        `${issue.path.join('.')}: ${issue.message}`
+      );
+      throw new Error(`Configuration validation failed:\n${issues.join('\n')}`);
+    }
+    throw error;
+  }
+};
+
+export const config = parseConfig();
+export type Config = typeof config;
+```
+
+## 🔒 Environment Variables
+
+### Required Variables
+
+<Tabs>
+  <Tab title="Production">
+```bash
+# Application
+NODE_ENV=production
+PORT=3000
+
+# Database
+DATABASE_URL=postgresql://user:password@host:5432/skyguard_prod
+DB_POOL_MIN=2
+DB_POOL_MAX=20
+
+# Security (REQUIRED)
+JWT_SECRET=your-super-secure-secret-key-here-minimum-32-characters
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
+
+# CORS
+CORS_ORIGIN=https://yourdomain.com
+CORS_CREDENTIALS=true
+
+# Logging
+LOG_LEVEL=info
+LOG_FORMAT=json
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=1000
+```
+  </Tab>
+  
+  <Tab title="Development">
+```bash
+# Application
+NODE_ENV=development
+PORT=3001
+
+# Database
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/skyguard_dev
+DB_POOL_MIN=0
+DB_POOL_MAX=5
+
+# Security
+JWT_SECRET=development-secret-key-32-chars-min
+JWT_ACCESS_EXPIRES_IN=1h
+JWT_REFRESH_EXPIRES_IN=30d
+
+# CORS
+CORS_ORIGIN=http://localhost:3000
+CORS_CREDENTIALS=true
+
+# Logging
+LOG_LEVEL=debug
+LOG_FORMAT=pretty
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=1000
+```
+  </Tab>
+  
+  <Tab title="Testing">
+```bash
+# Application
+NODE_ENV=test
+PORT=0
+
+# Database
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/skyguard_test
+DB_POOL_MIN=0
+DB_POOL_MAX=2
+
+# Security
+JWT_SECRET=test-secret-key-32-characters-long
+JWT_ACCESS_EXPIRES_IN=1h
+JWT_REFRESH_EXPIRES_IN=1d
+
+# Logging
+LOG_LEVEL=error
+LOG_FORMAT=json
+
+# Disable rate limiting in tests
+RATE_LIMIT_MAX_REQUESTS=99999
+```
+  </Tab>
+</Tabs>
+
+## 🔐 Secrets Management
+
+### Development Secrets
+
+<Accordion title="Local Development (.env)">
+```bash
+# .env (for local development only)
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/skyguard_dev
+JWT_SECRET=development-secret-key-32-chars-min
+SMTP_PASS=your-smtp-password
+```
+
+<Warning>
+Never commit `.env` files to version control. Always add them to `.gitignore`.
+</Warning>
+</Accordion>
+
+### Production Secrets
+
+<CodeGroup>
+```bash Docker Secrets
+# docker-compose.prod.yml
+version: '3.8'
+services:
+  api:
+    image: skyguard-api:latest
+    environment:
+      - DATABASE_URL_FILE=/run/secrets/database_url
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    secrets:
+      - database_url
+      - jwt_secret
+
+secrets:
+  database_url:
+    external: true
+  jwt_secret:
+    external: true
+```
+
+```bash Kubernetes Secrets
+# k8s-secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: skyguard-secrets
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://user:pass@host:5432/db
+  JWT_SECRET: your-production-jwt-secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skyguard-api
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: skyguard-api:latest
+        envFrom:
+        - secretRef:
+            name: skyguard-secrets
+```
+
+```bash Azure Key Vault
+# Using Azure Key Vault with environment variables
+export DATABASE_URL=$(az keyvault secret show --vault-name skyguard-kv --name database-url --query value -o tsv)
+export JWT_SECRET=$(az keyvault secret show --vault-name skyguard-kv --name jwt-secret --query value -o tsv)
+```
+</CodeGroup>
+
+### Secrets Loading Helper
+
+```typescript
+// src/core/config/secrets.ts
+import fs from 'fs';
+import path from 'path';
+
+export class SecretsManager {
+  /**
+   * Load secret from file or environment variable
+   */
+  static loadSecret(envVar: string): string {
+    const fileVar = `${envVar}_FILE`;
+    const filePath = process.env[fileVar];
+    
+    if (filePath && fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf8').trim();
+    }
+    
+    const value = process.env[envVar];
+    if (!value) {
+      throw new Error(`Missing required secret: ${envVar} or ${fileVar}`);
+    }
+    
+    return value;
+  }
+
+  /**
+   * Load multiple secrets at once
+   */
+  static loadSecrets(secretNames: string[]): Record<string, string> {
+    const secrets: Record<string, string> = {};
+    
+    for (const name of secretNames) {
+      secrets[name] = this.loadSecret(name);
+    }
+    
+    return secrets;
+  }
+}
+
+// Usage in configuration
+const secrets = SecretsManager.loadSecrets([
+  'DATABASE_URL',
+  'JWT_SECRET',
+  'SMTP_PASS'
+]);
+```
+
+## ✅ Configuration Validation
+
+### Validation Strategies
+
+<CodeGroup>
+```typescript Runtime Validation
+// src/core/config/validation.ts
+import { z } from 'zod';
+
+export const validateConfig = (config: Record<string, any>) => {
+  // Database URL validation
+  if (!config.DATABASE_URL?.startsWith('postgresql://')) {
+    throw new Error('DATABASE_URL must be a valid PostgreSQL connection string');
+  }
+
+  // JWT Secret strength validation
+  if (config.JWT_SECRET && config.JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters long');
+  }
+
+  // Port validation
+  const port = parseInt(config.PORT);
+  if (isNaN(port) || port < 1 || port > 65535) {
+    throw new Error('PORT must be a valid port number (1-65535)');
+  }
+
+  // Environment-specific validations
+  if (config.NODE_ENV === 'production') {
+    validateProductionConfig(config);
+  }
+
+  return true;
+};
+
+const validateProductionConfig = (config: Record<string, any>) => {
+  const requiredProdVars = [
+    'DATABASE_URL',
+    'JWT_SECRET',
+    'CORS_ORIGIN'
+  ];
+
+  for (const variable of requiredProdVars) {
+    if (!config[variable]) {
+      throw new Error(`${variable} is required in production environment`);
+    }
+  }
+
+  // Ensure secure defaults
+  if (config.CORS_ORIGIN === '*') {
+    throw new Error('CORS_ORIGIN cannot be "*" in production');
+  }
+
+  if (config.JWT_SECRET === 'development-secret-key-32-chars-min') {
+    throw new Error('JWT_SECRET must be changed from development default');
+  }
+};
+```
+
+```typescript Startup Validation
+// src/core/config/startup.ts
+import { config } from './index';
+import { validateConfig } from './validation';
+import { db } from '../database/connection';
+
+export const validateStartupConfiguration = async (): Promise<void> => {
+  console.log('🔧 Validating configuration...');
+
+  try {
+    // Validate basic configuration
+    validateConfig(config);
+    console.log('✅ Configuration validation passed');
+
+    // Test database connection
+    await testDatabaseConnection();
+    console.log('✅ Database connection successful');
+
+    // Validate external service connections
+    await validateExternalServices();
+    console.log('✅ External services validation passed');
+
+    console.log('🚀 Configuration validation complete');
+  } catch (error) {
+    console.error('❌ Configuration validation failed:', error.message);
+    process.exit(1);
+  }
+};
+
+const testDatabaseConnection = async (): Promise<void> => {
+  try {
+    await db.select().from('information_schema.tables').limit(1);
+  } catch (error) {
+    throw new Error(`Database connection failed: ${error.message}`);
+  }
+};
+
+const validateExternalServices = async (): Promise<void> => {
+  // Test SMTP connection if configured
+  if (config.SMTP_HOST) {
+    // Add SMTP connection test
+  }
+
+  // Test other external services
+  // Add more service validations as needed
+};
+```
+</CodeGroup>
+
+## 🌍 Environment-Specific Configuration
+
+### Configuration Loading Strategy
+
+```typescript
+// src/core/config/environment.ts
+import { config } from './index';
+
+export class EnvironmentConfig {
+  static isDevelopment(): boolean {
+    return config.NODE_ENV === 'development';
+  }
+
+  static isProduction(): boolean {
+    return config.NODE_ENV === 'production';
+  }
+
+  static isTest(): boolean {
+    return config.NODE_ENV === 'test';
+  }
+
+  static getDatabaseConfig() {
+    return {
+      url: config.DATABASE_URL,
+      pool: {
+        min: config.DB_POOL_MIN,
+        max: config.DB_POOL_MAX,
+        acquireTimeoutMillis: config.DB_CONNECTION_TIMEOUT,
+      },
+      debug: this.isDevelopment(),
+    };
+  }
+
+  static getSecurityConfig() {
+    return {
+      jwt: {
+        secret: config.JWT_SECRET,
+        accessExpiresIn: config.JWT_ACCESS_EXPIRES_IN,
+        refreshExpiresIn: config.JWT_REFRESH_EXPIRES_IN,
+      },
+      bcrypt: {
+        rounds: config.BCRYPT_ROUNDS,
+      },
+      cors: {
+        origin: config.CORS_ORIGIN,
+        credentials: config.CORS_CREDENTIALS,
+      },
+    };
+  }
+
+  static getRateLimitConfig() {
+    return {
+      windowMs: config.RATE_LIMIT_WINDOW_MS,
+      max: config.RATE_LIMIT_MAX_REQUESTS,
+      standardHeaders: true,
+      legacyHeaders: false,
+    };
+  }
+
+  static getLoggingConfig() {
+    return {
+      level: config.LOG_LEVEL,
+      format: config.LOG_FORMAT,
+      prettyPrint: this.isDevelopment(),
+    };
+  }
+}
+```
+
+## 🔄 Configuration Hot Reloading
+
+### Development Hot Reloading
+
+```typescript
+// src/core/config/hotReload.ts
+import fs from 'fs';
+import path from 'path';
+import { EventEmitter } from 'events';
+
+export class ConfigHotReloader extends EventEmitter {
+  private envPath: string;
+  private watcher?: fs.FSWatcher;
+
+  constructor(envPath: string = '.env') {
+    super();
+    this.envPath = path.resolve(envPath);
+  }
+
+  start(): void {
+    if (!fs.existsSync(this.envPath)) {
+      console.warn(`Configuration file ${this.envPath} not found`);
+      return;
+    }
+
+    this.watcher = fs.watch(this.envPath, (eventType) => {
+      if (eventType === 'change') {
+        this.reloadConfig();
+      }
+    });
+
+    console.log(`🔄 Watching ${this.envPath} for changes`);
+  }
+
+  stop(): void {
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = undefined;
+    }
+  }
+
+  private reloadConfig(): void {
+    try {
+      // Clear require cache for dotenv
+      delete require.cache[require.resolve('dotenv')];
+      
+      // Reload environment variables
+      require('dotenv').config({ path: this.envPath });
+      
+      console.log('🔄 Configuration reloaded');
+      this.emit('configReloaded');
+    } catch (error) {
+      console.error('❌ Failed to reload configuration:', error.message);
+      this.emit('configError', error);
+    }
+  }
+}
+
+// Usage in development
+if (process.env.NODE_ENV === 'development') {
+  const hotReloader = new ConfigHotReloader();
+  hotReloader.start();
+
+  hotReloader.on('configReloaded', () => {
+    // Handle configuration changes
+    console.log('Configuration updated');
+  });
+
+  process.on('SIGINT', () => {
+    hotReloader.stop();
+    process.exit(0);
+  });
+}
+```
+
+## 📋 Configuration Checklist
+
+### Development Setup
+- [ ] `.env` file created with all required variables
+- [ ] Database connection string configured
+- [ ] JWT secret generated (minimum 32 characters)
+- [ ] CORS origin set for frontend URL
+- [ ] Log level set to `debug` for development
+
+### Production Deployment
+- [ ] All secrets stored securely (not in code)
+- [ ] Environment variables validated at startup
+- [ ] Database connection pooling configured
+- [ ] JWT secret is production-ready
+- [ ] CORS origin restricted to production domains
+- [ ] Rate limiting properly configured
+- [ ] Logging level appropriate for production
+- [ ] Monitoring and metrics enabled
+
+### Security Review
+- [ ] No secrets in version control
+- [ ] Strong JWT secret in production
+- [ ] Database credentials secured
+- [ ] CORS properly configured
+- [ ] Input validation on all config values
+- [ ] Error messages don't expose sensitive info
+
+### Testing Configuration
+- [ ] Test environment isolated from development
+- [ ] Test database separate from development
+- [ ] Rate limiting disabled or increased for tests
+- [ ] Logging level set to minimize test output
+- [ ] All required test environment variables set
+
+This comprehensive configuration management approach ensures secure, maintainable, and environment-appropriate configuration across all deployment scenarios.

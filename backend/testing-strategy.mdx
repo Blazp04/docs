@@ -1,0 +1,786 @@
+---
+title: "Testing Strategy"
+description: "Unit, integration, and E2E testing guidelines with comprehensive examples for the SkyGuard backend"
+---
+
+# Testing Strategy
+
+This guide covers the comprehensive testing strategy for the SkyGuard backend, including unit tests, integration tests, and end-to-end testing practices.
+
+## 🧪 Testing Philosophy
+
+### Testing Pyramid
+
+Our testing strategy follows the testing pyramid principle to ensure efficient and effective test coverage:
+
+```
+    E2E Tests (10%)
+   ┌─────────────────┐
+   │ Integration (20%)│
+   └─────────────────┘
+  ┌───────────────────┐
+  │   Unit Tests (70%) │
+  └───────────────────┘
+```
+
+### Testing Principles
+
+- **Fast Feedback**: Unit tests should run quickly and provide immediate feedback
+- **Isolation**: Each test should be independent and not affect others
+- **Deterministic**: Tests should always produce the same result given the same input
+- **Meaningful**: Tests should validate business logic and critical functionality
+- **Maintainable**: Tests should be easy to read, understand, and modify
+
+## 🔧 Testing Framework Setup
+
+### Dependencies
+
+```json
+{
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "@types/supertest": "^2.0.12",
+    "jest": "^29.0.0",
+    "supertest": "^6.3.0",
+    "ts-jest": "^29.0.0",
+    "testcontainers": "^9.0.0",
+    "@testcontainers/postgres": "^2.0.0"
+  }
+}
+```
+
+### Jest Configuration
+
+```javascript
+// jest.config.js
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src', '<rootDir>/tests'],
+  testMatch: [
+    '**/__tests__/**/*.test.ts',
+    '**/?(*.)+(spec|test).ts'
+  ],
+  transform: {
+    '^.+\\.ts$': 'ts-jest',
+  },
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/server.ts',
+    '!src/app.ts',
+    '!src/core/database/migrations/**',
+  ],
+  coverageDirectory: 'coverage',
+  coverageReporters: [
+    'text',
+    'lcov',
+    'html'
+  ],
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+  testTimeout: 30000,
+  maxWorkers: 1, // For database tests
+};
+```
+
+### Test Setup
+
+```typescript
+// tests/setup.ts
+import { config } from '../src/core/config';
+import { db, connection } from '../src/lib/db';
+
+// Set test environment
+process.env.NODE_ENV = 'test';
+process.env.DATABASE_URL = 'postgresql://test:test@localhost:5432/skyguard_test';
+process.env.LOG_LEVEL = 'error';
+
+// Global test setup
+beforeAll(async () => {
+  // Initialize test database
+  await setupTestDatabase();
+});
+
+afterAll(async () => {
+  // Cleanup test database
+  await teardownTestDatabase();
+  await connection.end();
+});
+
+// Global test utilities
+global.testHelpers = {
+  // Add global test helper functions here
+};
+```
+
+## 🧪 Unit Testing
+
+### Repository Testing
+
+<CodeGroup>
+```typescript User Repository Test
+// tests/unit/repositories/UserRepository.test.ts
+import { UserRepository } from '../../../src/core/database/repositories/UserRepository';
+import { UserRole } from '../../../src/core/models/entities/User';
+import { DatabaseTestHelper } from '../../helpers/DatabaseTestHelper';
+
+describe('UserRepository', () => {
+  let userRepository: UserRepository;
+  let dbHelper: DatabaseTestHelper;
+
+  beforeAll(async () => {
+    dbHelper = new DatabaseTestHelper();
+    await dbHelper.setup();
+    userRepository = new UserRepository();
+  });
+
+  afterAll(async () => {
+    await dbHelper.teardown();
+  });
+
+  beforeEach(async () => {
+    await dbHelper.clearTables(['users']);
+  });
+
+  describe('create', () => {
+    it('should create a new user with valid data', async () => {
+      // Arrange
+      const userData = {
+        email: 'test@example.com',
+        password: 'hashedPassword123',
+        firstName: 'John',
+        lastName: 'Doe',
+        role: UserRole.USER,
+        organizationId: null
+      };
+
+      // Act
+      const result = await userRepository.create(userData);
+
+      // Assert
+      expect(result).toBeDefined();
+      expect(result.id).toBeDefined();
+      expect(result.email).toBe(userData.email);
+      expect(result.firstName).toBe(userData.firstName);
+      expect(result.lastName).toBe(userData.lastName);
+      expect(result.role).toBe(userData.role);
+      expect(result.createdAt).toBeInstanceOf(Date);
+      expect(result.updatedAt).toBeInstanceOf(Date);
+    });
+
+    it('should throw error when creating user with duplicate email', async () => {
+      // Arrange
+      const userData = {
+        email: 'duplicate@example.com',
+        password: 'hashedPassword123',
+        firstName: 'John',
+        lastName: 'Doe',
+        role: UserRole.USER
+      };
+
+      await userRepository.create(userData);
+
+      // Act & Assert
+      await expect(userRepository.create(userData))
+        .rejects
+        .toThrow();
+    });
+  });
+
+  describe('findByEmail', () => {
+    it('should return user when email exists', async () => {
+      // Arrange
+      const userData = await dbHelper.createTestUser({
+        email: 'find@example.com',
+        firstName: 'Jane',
+        lastName: 'Smith'
+      });
+
+      // Act
+      const result = await userRepository.findByEmail('find@example.com');
+
+      // Assert
+      expect(result).toBeDefined();
+      expect(result!.id).toBe(userData.id);
+      expect(result!.email).toBe(userData.email);
+    });
+
+    it('should return null when email does not exist', async () => {
+      // Act
+      const result = await userRepository.findByEmail('nonexistent@example.com');
+
+      // Assert
+      expect(result).toBeNull();
+    });
+  });
+});
+```
+
+```typescript Service Testing
+// tests/unit/services/UserService.test.ts
+import { UserService } from '../../../src/core/services/UserService';
+import { UserRepository } from '../../../src/core/database/repositories/UserRepository';
+import { UserRole } from '../../../src/core/models/entities/User';
+import { CreateUserDto } from '../../../src/dto/user.dto';
+
+// Mock repository
+jest.mock('../../../src/core/database/repositories/UserRepository');
+
+describe('UserService', () => {
+  let userService: UserService;
+  let mockUserRepository: jest.Mocked<UserRepository>;
+
+  beforeEach(() => {
+    // Clear all mocks before each test
+    jest.clearAllMocks();
+    
+    // Create mocked repository
+    mockUserRepository = new UserRepository() as jest.Mocked<UserRepository>;
+    
+    // Create service with mocked dependencies
+    userService = new UserService();
+    (userService as any).userRepository = mockUserRepository;
+  });
+
+  describe('createUser', () => {
+    it('should create user successfully with valid data', async () => {
+      // Arrange
+      const userData: CreateUserDto = {
+        email: 'test@example.com',
+        password: 'ValidPass123!',
+        firstName: 'John',
+        lastName: 'Doe',
+        role: UserRole.USER,
+        organizationId: 'org-123'
+      };
+
+      const currentUser = {
+        id: 'admin-123',
+        role: UserRole.ADMIN,
+        organizationId: 'org-123'
+      } as any;
+
+      const createdUser = {
+        id: 'user-123',
+        email: userData.email,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        role: userData.role,
+        organizationId: userData.organizationId
+      } as any;
+
+      mockUserRepository.findByEmail.mockResolvedValue(null);
+      mockUserRepository.create.mockResolvedValue(createdUser);
+
+      // Act
+      const result = await userService.createUser(userData, currentUser);
+
+      // Assert
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(expect.objectContaining({
+        email: userData.email,
+        firstName: userData.firstName,
+        lastName: userData.lastName
+      }));
+      expect(mockUserRepository.findByEmail).toHaveBeenCalledWith(userData.email);
+      expect(mockUserRepository.create).toHaveBeenCalled();
+    });
+
+    it('should reject creation if user lacks permission', async () => {
+      // Arrange
+      const userData: CreateUserDto = {
+        email: 'test@example.com',
+        password: 'ValidPass123!',
+        firstName: 'John',
+        lastName: 'Doe',
+        role: UserRole.USER
+      };
+
+      const currentUser = {
+        id: 'user-123',
+        role: UserRole.USER
+      } as any;
+
+      // Act
+      const result = await userService.createUser(userData, currentUser);
+
+      // Assert
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Insufficient permissions');
+      expect(mockUserRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject creation if email already exists', async () => {
+      // Arrange
+      const userData: CreateUserDto = {
+        email: 'existing@example.com',
+        password: 'ValidPass123!',
+        firstName: 'John',
+        lastName: 'Doe',
+        role: UserRole.USER
+      };
+
+      const currentUser = {
+        id: 'admin-123',
+        role: UserRole.ADMIN,
+        organizationId: 'org-123'
+      } as any;
+
+      const existingUser = { id: 'existing-123' } as any;
+      mockUserRepository.findByEmail.mockResolvedValue(existingUser);
+
+      // Act
+      const result = await userService.createUser(userData, currentUser);
+
+      // Assert
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('already exists');
+      expect(mockUserRepository.create).not.toHaveBeenCalled();
+    });
+  });
+});
+```
+</CodeGroup>
+
+## 🔗 Integration Testing
+
+### API Endpoint Testing
+
+```typescript
+// tests/integration/api/users.test.ts
+import request from 'supertest';
+import { app } from '../../../src/app';
+import { DatabaseTestHelper } from '../../helpers/DatabaseTestHelper';
+import { AuthTestHelper } from '../../helpers/AuthTestHelper';
+
+describe('Users API', () => {
+  let dbHelper: DatabaseTestHelper;
+  let authHelper: AuthTestHelper;
+
+  beforeAll(async () => {
+    dbHelper = new DatabaseTestHelper();
+    authHelper = new AuthTestHelper();
+    await dbHelper.setup();
+  });
+
+  afterAll(async () => {
+    await dbHelper.teardown();
+  });
+
+  beforeEach(async () => {
+    await dbHelper.clearTables(['users', 'organizations']);
+  });
+
+  describe('POST /api/v1/users', () => {
+    it('should create user successfully when authenticated as admin', async () => {
+      // Arrange
+      const organization = await dbHelper.createTestOrganization();
+      const adminUser = await dbHelper.createTestUser({
+        role: 'admin',
+        organizationId: organization.id
+      });
+      const authToken = authHelper.generateToken(adminUser);
+
+      const newUserData = {
+        email: 'newuser@example.com',
+        password: 'ValidPass123!',
+        firstName: 'New',
+        lastName: 'User',
+        role: 'user',
+        organizationId: organization.id
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/users')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(newUserData)
+        .expect(201);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toEqual(expect.objectContaining({
+        email: newUserData.email,
+        firstName: newUserData.firstName,
+        lastName: newUserData.lastName,
+        role: newUserData.role
+      }));
+      expect(response.body.data.password).toBeUndefined(); // Password should not be returned
+    });
+
+    it('should return 401 when not authenticated', async () => {
+      // Arrange
+      const newUserData = {
+        email: 'newuser@example.com',
+        password: 'ValidPass123!',
+        firstName: 'New',
+        lastName: 'User',
+        role: 'user'
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/users')
+        .send(newUserData)
+        .expect(401);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+      expect(response.body.message).toContain('Authentication');
+    });
+
+    it('should return 403 when user lacks permission', async () => {
+      // Arrange
+      const regularUser = await dbHelper.createTestUser({ role: 'user' });
+      const authToken = authHelper.generateToken(regularUser);
+
+      const newUserData = {
+        email: 'newuser@example.com',
+        password: 'ValidPass123!',
+        firstName: 'New',
+        lastName: 'User',
+        role: 'user'
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/users')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(newUserData)
+        .expect(403);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+      expect(response.body.message).toContain('Insufficient permissions');
+    });
+
+    it('should return 400 with validation errors for invalid data', async () => {
+      // Arrange
+      const adminUser = await dbHelper.createTestUser({ role: 'admin' });
+      const authToken = authHelper.generateToken(adminUser);
+
+      const invalidUserData = {
+        email: 'invalid-email', // Invalid email format
+        password: '123', // Too short
+        firstName: '', // Empty
+        lastName: 'User',
+        role: 'invalid-role' // Invalid role
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/api/v1/users')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(invalidUserData)
+        .expect(400);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+      expect(response.body.message).toContain('validation');
+    });
+  });
+
+  describe('GET /api/v1/users', () => {
+    it('should return paginated users for admin', async () => {
+      // Arrange
+      const organization = await dbHelper.createTestOrganization();
+      const adminUser = await dbHelper.createTestUser({
+        role: 'admin',
+        organizationId: organization.id
+      });
+
+      // Create test users
+      for (let i = 0; i < 15; i++) {
+        await dbHelper.createTestUser({
+          email: `user${i}@example.com`,
+          organizationId: organization.id
+        });
+      }
+
+      const authToken = authHelper.generateToken(adminUser);
+
+      // Act
+      const response = await request(app)
+        .get('/api/v1/users?page=1&limit=10')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      // Assert
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toHaveLength(10);
+      expect(response.body.meta).toEqual(expect.objectContaining({
+        total: expect.any(Number),
+        page: 1,
+        limit: 10,
+        totalPages: expect.any(Number)
+      }));
+    });
+  });
+});
+```
+
+## 🔒 Security Testing
+
+### Authentication Testing
+
+```typescript
+// tests/security/auth.test.ts
+import request from 'supertest';
+import { app } from '../../src/app';
+import { DatabaseTestHelper } from '../helpers/DatabaseTestHelper';
+import jwt from 'jsonwebtoken';
+
+describe('Authentication Security', () => {
+  let dbHelper: DatabaseTestHelper;
+
+  beforeAll(async () => {
+    dbHelper = new DatabaseTestHelper();
+    await dbHelper.setup();
+  });
+
+  afterAll(async () => {
+    await dbHelper.teardown();
+  });
+
+  describe('JWT Token Security', () => {
+    it('should reject requests with invalid JWT signature', async () => {
+      // Arrange
+      const invalidToken = jwt.sign(
+        { userId: '123', role: 'admin' },
+        'wrong-secret'
+      );
+
+      // Act
+      const response = await request(app)
+        .get('/api/v1/users')
+        .set('Authorization', `Bearer ${invalidToken}`)
+        .expect(401);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+      expect(response.body.message).toContain('Authentication failed');
+    });
+
+    it('should reject expired tokens', async () => {
+      // Arrange
+      const expiredToken = jwt.sign(
+        {
+          userId: '123',
+          role: 'admin',
+          exp: Math.floor(Date.now() / 1000) - 3600 // Expired 1 hour ago
+        },
+        process.env.JWT_SECRET!
+      );
+
+      // Act
+      const response = await request(app)
+        .get('/api/v1/users')
+        .set('Authorization', `Bearer ${expiredToken}`)
+        .expect(401);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should reject tokens with missing required claims', async () => {
+      // Arrange
+      const incompleteToken = jwt.sign(
+        { userId: '123' }, // Missing role
+        process.env.JWT_SECRET!
+      );
+
+      // Act
+      const response = await request(app)
+        .get('/api/v1/users')
+        .set('Authorization', `Bearer ${incompleteToken}`)
+        .expect(401);
+
+      // Assert
+      expect(response.body.success).toBe(false);
+    });
+  });
+
+  describe('Rate Limiting', () => {
+    it('should limit login attempts', async () => {
+      // Arrange
+      const loginData = {
+        email: 'test@example.com',
+        password: 'wrongpassword'
+      };
+
+      // Act - Make multiple failed login attempts
+      const requests = Array(10).fill(null).map(() =>
+        request(app)
+          .post('/api/v1/auth/login')
+          .send(loginData)
+      );
+
+      const responses = await Promise.all(requests);
+
+      // Assert - Last few requests should be rate limited
+      const rateLimitedResponses = responses.filter(res => res.status === 429);
+      expect(rateLimitedResponses.length).toBeGreaterThan(0);
+    });
+  });
+});
+```
+
+## 🔧 Test Helpers
+
+### Database Test Helper
+
+```typescript
+// tests/helpers/DatabaseTestHelper.ts
+import { db } from '../../src/lib/db';
+import { users, organizations } from '../../src/schema';
+import { eq } from 'drizzle-orm';
+import { PasswordService } from '../../src/core/services/PasswordService';
+
+export class DatabaseTestHelper {
+  async setup(): Promise<void> {
+    // Run migrations or setup test database
+    // This is typically done in global setup
+  }
+
+  async teardown(): Promise<void> {
+    // Cleanup test database
+    await this.clearAllTables();
+  }
+
+  async clearTables(tableNames: string[]): Promise<void> {
+    for (const tableName of tableNames) {
+      switch (tableName) {
+        case 'users':
+          await db.delete(users);
+          break;
+        case 'organizations':
+          await db.delete(organizations);
+          break;
+        // Add more tables as needed
+      }
+    }
+  }
+
+  async clearAllTables(): Promise<void> {
+    await this.clearTables(['users', 'organizations']);
+  }
+
+  async createTestOrganization(data?: Partial<any>): Promise<any> {
+    const [organization] = await db
+      .insert(organizations)
+      .values({
+        name: data?.name || 'Test Organization',
+        description: data?.description || 'Test organization for testing',
+        ...data
+      })
+      .returning();
+
+    return organization;
+  }
+
+  async createTestUser(data?: Partial<any>): Promise<any> {
+    const hashedPassword = await PasswordService.hashPassword(
+      data?.password || 'TestPassword123!'
+    );
+
+    const [user] = await db
+      .insert(users)
+      .values({
+        email: data?.email || `test-${Date.now()}@example.com`,
+        password: hashedPassword,
+        firstName: data?.firstName || 'Test',
+        lastName: data?.lastName || 'User',
+        role: data?.role || 'user',
+        organizationId: data?.organizationId || null,
+        ...data
+      })
+      .returning();
+
+    return user;
+  }
+}
+```
+
+### Auth Test Helper
+
+```typescript
+// tests/helpers/AuthTestHelper.ts
+import jwt from 'jsonwebtoken';
+
+export class AuthTestHelper {
+  generateToken(user: any, expiresIn: string = '1h'): string {
+    return jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        role: user.role,
+        organizationId: user.organizationId
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn }
+    );
+  }
+
+  generateExpiredToken(user: any): string {
+    return this.generateToken(user, '-1h'); // Expired 1 hour ago
+  }
+
+  generateInvalidToken(user: any): string {
+    return jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        role: user.role
+      },
+      'wrong-secret'
+    );
+  }
+}
+```
+
+## ✅ Testing Checklist
+
+<Tip>
+Use this checklist to ensure comprehensive test coverage:
+</Tip>
+
+### Unit Testing
+- [ ] Repository CRUD operations
+- [ ] Service business logic
+- [ ] Utility functions
+- [ ] Error handling scenarios
+- [ ] Edge cases and boundary conditions
+- [ ] Mock external dependencies
+
+### Integration Testing
+- [ ] API endpoint functionality
+- [ ] Authentication middleware
+- [ ] Authorization checks
+- [ ] Request/response formats
+- [ ] Database interactions
+- [ ] Error response consistency
+
+### Security Testing
+- [ ] Authentication token validation
+- [ ] Authorization permission checks
+- [ ] Input validation and sanitization
+- [ ] Rate limiting functionality
+- [ ] SQL injection prevention
+- [ ] XSS prevention
+
+### Performance Testing
+- [ ] Database query performance
+- [ ] API response times
+- [ ] Concurrent request handling
+- [ ] Memory usage patterns
+- [ ] Connection pool management
+
+### Test Maintenance
+- [ ] Tests run in CI/CD pipeline
+- [ ] Coverage reporting configured
+- [ ] Test data cleanup
+- [ ] Mock maintenance
+- [ ] Test documentation updates
+- [ ] Regular test review and refactoring
+
+This comprehensive testing strategy ensures high-quality, reliable, and secure code while maintaining fast development cycles and confidence in deployments.

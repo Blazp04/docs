@@ -1,0 +1,632 @@
+---
+title: "API Layer Architecture"
+description: "RESTful design, OpenAPI schemas, authentication, and request/response patterns for the SkyGuard backend"
+---
+
+# API Layer Architecture
+
+This guide covers the API layer design principles, RESTful conventions, OpenAPI documentation, and implementation patterns for the SkyGuard backend.
+
+## 🌐 API Design Principles
+
+### RESTful Design Standards
+
+Our API follows these RESTful principles:
+
+- **Resources**: Use nouns for endpoints (`/users`, `/organizations`)
+- **HTTP Methods**: Follow semantic conventions (GET, POST, PUT, DELETE)
+- **Status Codes**: Use appropriate HTTP status codes
+- **Versioning**: Prefix with `/api/v1/` for version control
+- **Consistency**: Maintain consistent response formats across all endpoints
+
+### URL Structure
+
+```
+/api/v1/{resource}
+/api/v1/{resource}/{id}
+/api/v1/{resource}/{id}/{sub-resource}
+```
+
+<Tabs>
+  <Tab title="User Examples">
+    - `GET /api/v1/users` - List users
+    - `GET /api/v1/users/123` - Get specific user
+    - `POST /api/v1/users` - Create user
+    - `PUT /api/v1/users/123` - Update user
+    - `DELETE /api/v1/users/123` - Delete user
+  </Tab>
+  
+  <Tab title="Nested Resource Examples">
+    - `GET /api/v1/users/123/permissions` - Get user permissions
+    - `POST /api/v1/organizations/456/users` - Create user in organization
+    - `GET /api/v1/organizations/456/roles` - Get organization roles
+  </Tab>
+</Tabs>
+
+## 📊 Response Format Standards
+
+### Standard Success Response
+
+```typescript
+interface ApiResponse<T> {
+  success: true;
+  data: T;
+  message?: string;
+  meta?: {
+    total?: number;
+    page?: number;
+    limit?: number;
+    totalPages?: number;
+  };
+}
+```
+
+### Standard Error Response
+
+```typescript
+interface ApiErrorResponse {
+  success: false;
+  message: string;
+  error?: {
+    code?: string;
+    details?: any;
+    field?: string; // For validation errors
+  };
+}
+```
+
+### Response Examples
+
+<CodeGroup>
+```json Success with Data
+{
+  "success": true,
+  "data": {
+    "Id": 1,
+    "Email": "user@example.com",
+    "FirstName": "John",
+    "LastName": "Doe",
+    "Role": "User"
+  },
+  "message": "User retrieved successfully"
+}
+```
+
+```json Success with Pagination
+{
+  "success": true,
+  "data": [
+    { "Id": 1, "Name": "Organization 1" },
+    { "Id": 2, "Name": "Organization 2" }
+  ],
+  "meta": {
+    "total": 25,
+    "page": 1,
+    "limit": 10,
+    "totalPages": 3
+  }
+}
+```
+
+```json Error Response
+{
+  "success": false,
+  "message": "User not found",
+  "error": {
+    "code": "USER_NOT_FOUND",
+    "details": "No user exists with ID 123"
+  }
+}
+```
+
+```json Validation Error
+{
+  "success": false,
+  "message": "Validation failed",
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "field": "email",
+    "details": "Email format is invalid"
+  }
+}
+```
+</CodeGroup>
+
+## 🛣️ Route Structure
+
+### Route Organization
+
+```
+src/api/v1/routes/
+├── index.ts           # Main route aggregator
+├── auth.ts           # Authentication routes
+├── users.ts          # User management routes
+├── organizations.ts   # Organization routes
+└── admin.ts          # Admin-only routes
+```
+
+### Route Implementation Pattern
+
+```typescript
+// src/api/v1/routes/users.ts
+import { FastifyInstance } from 'fastify';
+import { UserHandler } from '../handlers/UserHandler';
+import { authenticate, authorize } from '../../../core/middleware';
+import { 
+  CreateUserSchema, 
+  UpdateUserSchema, 
+  GetUserSchema,
+  GetUsersSchema 
+} from '../../../dto/user.dto';
+
+export async function userRoutes(fastify: FastifyInstance) {
+  const userHandler = new UserHandler();
+
+  // GET /api/v1/users
+  fastify.get('/users', {
+    schema: GetUsersSchema,
+    preHandler: [authenticate, authorize(['users.read'])],
+    handler: userHandler.getUsers.bind(userHandler)
+  });
+
+  // GET /api/v1/users/:id
+  fastify.get('/users/:id', {
+    schema: GetUserSchema,
+    preHandler: [authenticate, authorize(['users.read'])],
+    handler: userHandler.getUserById.bind(userHandler)
+  });
+
+  // POST /api/v1/users
+  fastify.post('/users', {
+    schema: CreateUserSchema,
+    preHandler: [authenticate, authorize(['users.create'])],
+    handler: userHandler.createUser.bind(userHandler)
+  });
+
+  // PUT /api/v1/users/:id
+  fastify.put('/users/:id', {
+    schema: UpdateUserSchema,
+    preHandler: [authenticate, authorize(['users.update'])],
+    handler: userHandler.updateUser.bind(userHandler)
+  });
+
+  // DELETE /api/v1/users/:id
+  fastify.delete('/users/:id', {
+    preHandler: [authenticate, authorize(['users.delete'])],
+    handler: userHandler.deleteUser.bind(userHandler)
+  });
+}
+```
+
+## 🎯 Handler Implementation
+
+### Handler Structure
+
+```typescript
+// src/api/v1/handlers/UserHandler.ts
+import { FastifyRequest, FastifyReply } from 'fastify';
+import { UserService } from '../../../core/services/UserService';
+import { CreateUserDto, UpdateUserDto } from '../../../dto/user.dto';
+import { ApiResponse } from '../../../core/types';
+
+export class UserHandler {
+  private userService: UserService;
+
+  constructor() {
+    this.userService = new UserService();
+  }
+
+  async getUsers(
+    request: FastifyRequest<{ Querystring: { page?: number; limit?: number; role?: string } }>,
+    reply: FastifyReply
+  ): Promise<void> {
+    try {
+      const { page = 1, limit = 10, role } = request.query;
+      const currentUser = request.user; // From auth middleware
+
+      const result = await this.userService.getUsers(
+        { page, limit, role },
+        currentUser
+      );
+
+      if (!result.success) {
+        reply.status(400).send(result);
+        return;
+      }
+
+      reply.status(200).send(result);
+    } catch (error) {
+      request.log.error('Error in getUsers:', error);
+      reply.status(500).send({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'INTERNAL_ERROR',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }
+      });
+    }
+  }
+
+  async createUser(
+    request: FastifyRequest<{ Body: CreateUserDto }>,
+    reply: FastifyReply
+  ): Promise<void> {
+    try {
+      const userData = request.body;
+      const currentUser = request.user;
+
+      const result = await this.userService.createUser(userData, currentUser);
+
+      if (!result.success) {
+        const status = result.message.includes('already exists') ? 409 : 400;
+        reply.status(status).send(result);
+        return;
+      }
+
+      reply.status(201).send(result);
+    } catch (error) {
+      request.log.error('Error in createUser:', error);
+      reply.status(500).send({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'INTERNAL_ERROR',
+          details: error instanceof Error ? error.message : 'Unknown error'
+        }
+      });
+    }
+  }
+}
+```
+
+### Handler Best Practices
+
+<AccordionGroup>
+  <Accordion title="Error Handling">
+    ```typescript
+    // ✅ GOOD: Proper error handling with appropriate status codes
+    async getUserById(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+      try {
+        const { id } = request.params;
+        const userId = parseInt(id, 10);
+
+        if (isNaN(userId)) {
+          reply.status(400).send({
+            success: false,
+            message: 'Invalid user ID',
+            error: {
+              code: 'INVALID_ID',
+              field: 'id',
+              details: 'User ID must be a valid number'
+            }
+          });
+          return;
+        }
+
+        const result = await this.userService.getUserById(userId, request.user);
+
+        if (!result.success) {
+          const status = result.message.includes('not found') ? 404 : 403;
+          reply.status(status).send(result);
+          return;
+        }
+
+        reply.status(200).send(result);
+      } catch (error) {
+        request.log.error('Error in getUserById:', error);
+        reply.status(500).send({
+          success: false,
+          message: 'Internal server error'
+        });
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Input Validation">
+    ```typescript
+    // ✅ GOOD: Validate input parameters
+    async updateUser(request: FastifyRequest<{ Params: { id: string }; Body: UpdateUserDto }>, reply: FastifyReply) {
+      const { id } = request.params;
+      const updateData = request.body;
+      
+      // Validate ID format
+      if (!id || isNaN(parseInt(id))) {
+        reply.status(400).send({
+          success: false,
+          message: 'Invalid user ID format'
+        });
+        return;
+      }
+
+      // Additional validation happens in service layer
+      const result = await this.userService.updateUser(parseInt(id), updateData, request.user);
+      
+      if (!result.success) {
+        reply.status(400).send(result);
+        return;
+      }
+
+      reply.status(200).send(result);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Authentication Context">
+    ```typescript
+    // ✅ GOOD: Use authenticated user context
+    async createUser(request: FastifyRequest<{ Body: CreateUserDto }>, reply: FastifyReply) {
+      const userData = request.body;
+      const currentUser = request.user; // Set by auth middleware
+      
+      // Pass current user for permission checking
+      const result = await this.userService.createUser(userData, currentUser);
+      
+      if (!result.success) {
+        reply.status(400).send(result);
+        return;
+      }
+
+      reply.status(201).send(result);
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## 📋 OpenAPI Schema Definition
+
+### Schema Structure
+
+```typescript
+// src/dto/user.dto.ts
+export const GetUsersSchema = {
+  description: 'Get paginated list of users',
+  tags: ['Users'],
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: 'object',
+    properties: {
+      page: { type: 'number', minimum: 1, default: 1 },
+      limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
+      role: { 
+        type: 'string', 
+        enum: ['SuperAdmin', 'Admin', 'User'],
+        description: 'Filter by user role'
+      }
+    }
+  },
+  response: {
+    200: {
+      description: 'Users retrieved successfully',
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', const: true },
+        data: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              Id: { type: 'number' },
+              Email: { type: 'string', format: 'email' },
+              FirstName: { type: 'string' },
+              LastName: { type: 'string' },
+              Role: { type: 'string', enum: ['SuperAdmin', 'Admin', 'User'] },
+              OrganizationId: { type: 'number', nullable: true },
+              CreatedAt: { type: 'string', format: 'date-time' },
+              UpdatedAt: { type: 'string', format: 'date-time' }
+            },
+            required: ['Id', 'Email', 'FirstName', 'LastName', 'Role']
+          }
+        },
+        meta: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            page: { type: 'number' },
+            limit: { type: 'number' },
+            totalPages: { type: 'number' }
+          }
+        }
+      }
+    },
+    400: {
+      description: 'Bad request',
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', const: false },
+        message: { type: 'string' },
+        error: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' },
+            details: { type: 'string' },
+            field: { type: 'string' }
+          }
+        }
+      }
+    }
+  }
+};
+
+export const CreateUserSchema = {
+  description: 'Create a new user',
+  tags: ['Users'],
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: 'object',
+    required: ['Email', 'Password', 'FirstName', 'LastName', 'Role'],
+    properties: {
+      Email: { 
+        type: 'string', 
+        format: 'email',
+        maxLength: 255
+      },
+      Password: { 
+        type: 'string', 
+        minLength: 8,
+        pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]',
+        description: 'Password must contain at least 8 characters with uppercase, lowercase, number, and special character'
+      },
+      FirstName: { type: 'string', minLength: 1, maxLength: 100 },
+      LastName: { type: 'string', minLength: 1, maxLength: 100 },
+      Role: { 
+        type: 'string', 
+        enum: ['Admin', 'User'],
+        description: 'User role within the organization'
+      },
+      OrganizationId: { 
+        type: 'number',
+        description: 'Required for Admin and User roles'
+      }
+    }
+  },
+  response: {
+    201: {
+      description: 'User created successfully',
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', const: true },
+        data: {
+          type: 'object',
+          properties: {
+            Id: { type: 'number' },
+            Email: { type: 'string' },
+            FirstName: { type: 'string' },
+            LastName: { type: 'string' },
+            Role: { type: 'string' },
+            OrganizationId: { type: 'number', nullable: true }
+          }
+        },
+        message: { type: 'string' }
+      }
+    }
+  }
+};
+```
+
+## 🔐 Authentication & Authorization
+
+### Middleware Integration
+
+```typescript
+// Authentication middleware
+export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const token = extractBearerToken(request.headers.authorization);
+    
+    if (!token) {
+      reply.status(401).send({
+        success: false,
+        message: 'Authentication token required'
+      });
+      return;
+    }
+
+    const decoded = await verifyJWT(token);
+    const user = await getUserById(decoded.userId);
+    
+    if (!user) {
+      reply.status(401).send({
+        success: false,
+        message: 'Invalid authentication token'
+      });
+      return;
+    }
+
+    request.user = user;
+  } catch (error) {
+    reply.status(401).send({
+      success: false,
+      message: 'Authentication failed'
+    });
+  }
+}
+
+// Authorization middleware
+export function authorize(permissions: string[]) {
+  return async function(request: FastifyRequest, reply: FastifyReply) {
+    const user = request.user;
+    
+    if (!user) {
+      reply.status(401).send({
+        success: false,
+        message: 'Authentication required'
+      });
+      return;
+    }
+
+    const hasPermission = await checkUserPermissions(user, permissions);
+    
+    if (!hasPermission) {
+      reply.status(403).send({
+        success: false,
+        message: 'Insufficient permissions'
+      });
+      return;
+    }
+  };
+}
+```
+
+## 📋 HTTP Status Code Guidelines
+
+| Status Code | Usage | Example |
+|-------------|-------|---------|
+| **200** | Successful GET, PUT requests | User retrieved, user updated |
+| **201** | Successful POST requests | User created |
+| **204** | Successful DELETE requests | User deleted |
+| **400** | Validation errors, bad input | Invalid email format |
+| **401** | Authentication required | Missing or invalid token |
+| **403** | Permission denied | Insufficient privileges |
+| **404** | Resource not found | User doesn't exist |
+| **409** | Conflict | Email already exists |
+| **422** | Validation failed | Business rule violation |
+| **500** | Server errors | Database connection failed |
+
+## ✅ API Layer Checklist
+
+<Tip>
+Use this checklist when implementing new API endpoints:
+</Tip>
+
+### Route Implementation
+- [ ] Follow RESTful URL conventions
+- [ ] Include appropriate OpenAPI schema
+- [ ] Add authentication middleware where needed
+- [ ] Implement authorization checks
+- [ ] Use proper HTTP methods and status codes
+- [ ] Include comprehensive error handling
+
+### Handler Implementation
+- [ ] Validate input parameters
+- [ ] Handle edge cases gracefully
+- [ ] Use consistent response format
+- [ ] Log errors appropriately
+- [ ] Pass authenticated user context to services
+- [ ] Implement proper error status codes
+
+### OpenAPI Documentation
+- [ ] Include complete request/response schemas
+- [ ] Add parameter descriptions and constraints
+- [ ] Document all possible error responses
+- [ ] Include authentication requirements
+- [ ] Add example requests/responses
+- [ ] Tag endpoints appropriately
+
+### Security Considerations
+- [ ] Validate all input data
+- [ ] Check user permissions
+- [ ] Sanitize response data
+- [ ] Implement rate limiting where appropriate
+- [ ] Use HTTPS in production
+- [ ] Include security headers
+
+### Testing
+- [ ] Unit tests for handlers
+- [ ] Integration tests for endpoints
+- [ ] Test authentication/authorization
+- [ ] Test error scenarios
+- [ ] Validate OpenAPI schema compliance
+
+This API layer architecture ensures consistent, secure, and well-documented endpoints that follow RESTful principles and provide excellent developer experience.

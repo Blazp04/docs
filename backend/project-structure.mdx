@@ -1,0 +1,268 @@
+---
+title: "Project Structure"
+description: "Directory organization, file naming conventions, and module structure for the SkyGuard backend"
+---
+
+# Project Structure
+
+This guide outlines the directory organization, file naming conventions, and architectural structure of the SkyGuard backend. Following these guidelines ensures consistency and maintainability across the entire codebase.
+
+## 📁 Root Directory Structure
+
+```
+skyguard-backend/
+├── docs/                    # Mintlify documentation
+├── docs_/                   # Internal architecture docs
+├── src/                     # Source code
+├── dist/                    # Compiled JavaScript (build output)
+├── mssql_data/             # SQL Server data (development)
+├── scripts/                # Utility scripts
+├── .env.example           # Environment variables template
+├── package.json           # Project dependencies
+├── tsconfig.json          # TypeScript configuration
+├── nodemon.json           # Development server configuration
+└── docker-compose.yml     # Docker setup for development
+```
+
+## 🏗️ Source Code Structure (`src/`)
+
+```
+src/
+├── api/                   # API layer
+│   └── v1/               # API version 1
+│       ├── handlers/     # Request handlers (controllers)
+│       └── routes/       # Route definitions
+├── core/                 # Core application logic
+│   ├── config/          # Configuration files
+│   ├── database/        # Database layer
+│   │   ├── migrations/  # Database migrations
+│   │   └── repositories/ # Data access layer
+│   ├── middleware/      # Custom middleware
+│   ├── models/          # Data models and DTOs
+│   │   ├── dto/         # Data Transfer Objects
+│   │   └── entities/    # Database entities
+│   ├── services/        # Business logic layer
+│   └── utils/           # Utility functions
+├── app.ts              # Application setup
+└── server.ts           # Server entry point
+```
+
+## 🔄 Layer Architecture
+
+### 1. API Layer (`src/api/v1/`)
+**Purpose**: Handle HTTP requests and responses
+
+**Structure**:
+- `routes/` - Route definitions with OpenAPI schemas
+- `handlers/` - Request processing logic (controllers)
+
+**Responsibilities**:
+- Request validation and sanitization
+- Response formatting
+- Authentication middleware integration
+- OpenAPI documentation
+
+### 2. Core Layer (`src/core/`)
+**Purpose**: Core business logic and infrastructure
+
+**Subfolders**:
+- `services/` - Business logic and orchestration
+- `database/` - Data access and persistence
+- `middleware/` - Cross-cutting concerns
+- `models/` - Data structures and types
+- `config/` - Configuration management
+- `utils/` - Shared utilities
+
+### 3. Database Layer (`src/core/database/`)
+**Purpose**: Data persistence and access
+
+**Structure**:
+- `repositories/` - Data access objects
+- `migrations/` - Database schema evolution
+- `BaseRepository.ts` - Common database operations
+- `connection.ts` - Connection pool management
+
+## 📝 File Naming Conventions
+
+### General Rules
+
+<Tabs>
+  <Tab title="PascalCase">
+    Use **PascalCase** for:
+    - Class files: `UserService.ts`, `AuthMiddleware.ts`
+    - Interface files: `AuthTypes.ts`, `DatabaseTypes.ts`
+    - Component files: `BaseRepository.ts`
+  </Tab>
+  
+  <Tab title="camelCase">
+    Use **camelCase** for:
+    - Function files: `userHandler.ts`, `authHandler.ts`
+    - Utility files: `validation.ts`, `encryption.ts`
+    - Configuration files: `server.ts`, `database.ts`
+  </Tab>
+  
+  <Tab title="kebab-case">
+    Use **kebab-case** for:
+    - Migration files: `001_create_users_table.sql`
+    - Documentation files: `api-layer.md`
+  </Tab>
+</Tabs>
+
+### Specific Patterns
+
+| File Type | Pattern | Examples |
+|-----------|---------|----------|
+| Repository | `{EntityName}Repository.ts` | `UserRepository.ts`, `OrganizationRepository.ts` |
+| Service | `{DomainName}Service.ts` | `AuthService.ts`, `UserService.ts` |
+| Handler | `{entityName}Handler.ts` | `userHandler.ts`, `authHandler.ts` |
+| Route | `{entityName}.ts` | `auth.ts`, `users.ts` |
+| Migration | `{number}_{description}.sql` | `001_create_users_table.sql` |
+
+## 🎯 Directory Responsibilities
+
+### API Layer Directories
+
+<AccordionGroup>
+  <Accordion title="/src/api/v1/routes/">
+    **Responsibility**: Define HTTP routes and OpenAPI schemas
+    
+    **Rules**:
+    - One file per resource/entity
+    - Include complete OpenAPI documentation
+    - Delegate logic to handlers
+    - Group related endpoints
+  </Accordion>
+
+  <Accordion title="/src/api/v1/handlers/">
+    **Responsibility**: Process HTTP requests and responses
+    
+    **Rules**:
+    - Handle request validation
+    - Call appropriate services
+    - Format responses
+    - Handle errors gracefully
+  </Accordion>
+</AccordionGroup>
+
+### Core Layer Directories
+
+<AccordionGroup>
+  <Accordion title="/src/core/services/">
+    **Responsibility**: Business logic and workflow orchestration
+    
+    **Rules**:
+    - Stateless operations
+    - Coordinate between repositories
+    - Implement business rules
+    - Handle transactions
+  </Accordion>
+
+  <Accordion title="/src/core/database/repositories/">
+    **Responsibility**: Data access and persistence
+    
+    **Rules**:
+    - Extend BaseRepository
+    - Use parameterized queries
+    - Handle database-specific logic
+    - Return domain objects
+  </Accordion>
+
+  <Accordion title="/src/core/middleware/">
+    **Responsibility**: Cross-cutting concerns
+    
+    **Rules**:
+    - Authentication/authorization
+    - Logging and monitoring
+    - Error handling
+    - Request/response transformation
+  </Accordion>
+
+  <Accordion title="/src/core/models/">
+    **Responsibility**: Data structures and type definitions
+    
+    **Structure**:
+    - `dto/` - API request/response objects
+    - `entities/` - Database entity definitions
+  </Accordion>
+</AccordionGroup>
+
+## 📋 File Organization Rules
+
+### Import Organization
+
+```typescript
+// 1. External libraries
+import { FastifyInstance } from 'fastify';
+import bcrypt from 'bcrypt';
+
+// 2. Internal modules (relative imports)
+import { UserService } from '../../../core/services/UserService';
+import { UserRepository } from '../../../core/database/repositories/UserRepository';
+
+// 3. Types and interfaces
+import { User, CreateUserInput } from '../../../core/database/authTypes';
+```
+
+### Export Organization
+
+```typescript
+// Named exports preferred over default exports
+export class UserService { }
+export interface User { }
+export const userConfig = { };
+
+// Exception: Route modules can use default export
+export default userRoutes;
+```
+
+## 🔄 Migration Guidelines
+
+### Legacy Structure (being phased out)
+- `/src/routes/` → Move to `/src/api/v1/routes/`
+- `/src/dto/` → Move to `/src/core/models/dto/`
+
+### Best Practices for New Files
+1. **Follow the established patterns** in `/src/api/v1/` and `/src/core/`
+2. **Use TypeScript** for all new files
+3. **Include proper documentation** and comments
+4. **Follow naming conventions** strictly
+5. **Organize imports** according to the rules above
+
+## ✅ Checklist for New Files
+
+<Tip>
+Use this checklist when creating new files to ensure consistency:
+</Tip>
+
+- [ ] File placed in correct directory
+- [ ] Naming convention followed
+- [ ] Proper TypeScript types used
+- [ ] Imports organized correctly
+- [ ] Exports follow conventions
+- [ ] Documentation included
+- [ ] Error handling implemented
+
+## 📚 Examples
+
+### Typical File Structure for a New Feature
+
+```
+src/
+├── api/v1/
+│   ├── handlers/
+│   │   └── productHandler.ts
+│   └── routes/
+│       └── products.ts
+├── core/
+│   ├── services/
+│   │   └── ProductService.ts
+│   ├── database/repositories/
+│   │   └── ProductRepository.ts
+│   └── models/
+│       ├── dto/
+│       │   └── ProductDto.ts
+│       └── entities/
+│           └── Product.ts
+```
+
+This structure ensures clear separation of concerns and follows the established patterns for maintainable code organization.

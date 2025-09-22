@@ -1,0 +1,913 @@
+---
+title: "Database Architecture"
+description: "Repository pattern, SQL security, migration system, and performance guidelines using Drizzle ORM"
+---
+
+# Database Architecture with Drizzle ORM
+
+This guide covers the database architecture for SkyGuard backend, including the repository pattern, Drizzle ORM usage, migration system, and performance optimization strategies.
+
+## 🏗️ Database Design Principles
+
+### Entity Relationship Design
+
+Our database follows these core principles:
+
+- **Primary Keys**: Always use UUID with Drizzle's `uuid()` column type
+- **Foreign Keys**: Reference parent table's `id` column using Drizzle's `references()`
+- **Soft Deletes**: Use `deletedAt` timestamp instead of hard deletes
+- **Auditing**: Include `createdAt` and `updatedAt` timestamps on all tables
+- **Naming**: Use camelCase for schema definitions to match TypeScript conventions
+
+### Standard Table Schema
+
+```typescript
+import { pgTable, uuid, timestamp, boolean, varchar } from 'drizzle-orm/pg-core';
+
+export const baseColumns = {
+  id: uuid('id').primaryKey().defaultRandom(),
+  deletedAt: timestamp('deleted_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+};
+
+// Example table with base columns
+export const exampleTable = pgTable('example_table', {
+  ...baseColumns,
+  // Business columns here
+  name: varchar('name', { length: 255 }).notNull(),
+  isActive: boolean('is_active').default(true).notNull()
+});
+```
+
+## 🚀 Drizzle Query Patterns
+
+### Base Service Structure
+
+```typescript
+import { db } from '@/lib/db';
+import { eq, and, isNull, desc, sql } from 'drizzle-orm';
+
+export abstract class BaseService<TTable, TSelect, TInsert> {
+  constructor(protected table: TTable) {}
+
+  /**
+   * Find record by ID with soft delete check
+   */
+  async findById(id: string): Promise<TSelect | null> {
+    const [result] = await db
+      .select()
+      .from(this.table)
+      .where(and(
+        eq(this.table.id, id),
+        isNull(this.table.deletedAt)
+      ));
+    
+    return result || null;
+  }
+
+  /**
+   * Find all records with pagination and soft delete filtering
+   */
+  async findAll(options: PaginationOptions = {}): Promise<PaginatedResult<TSelect>> {
+    const { page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = options;
+    const offset = (page - 1) * limit;
+
+    const [data, totalResult] = await Promise.all([
+      db
+        .select()
+        .from(this.table)
+        .where(isNull(this.table.deletedAt))
+        .orderBy(sortOrder === 'desc' ? desc(this.table[sortBy]) : this.table[sortBy])
+        .limit(limit)
+        .offset(offset),
+      
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(this.table)
+        .where(isNull(this.table.deletedAt))
+    ]);
+
+    const total = totalResult[0].count;
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
+  }
+
+  /**
+   * Create new record with auto-generated ID and timestamps
+   */
+  async create(data: TInsert): Promise<TSelect> {
+    const [result] = await db
+      .insert(this.table)
+      .values(data)
+      .returning();
+    
+    return result;
+  }
+
+  /**
+   * Update record with automatic updatedAt timestamp
+   */
+  async update(id: string, data: Partial<TInsert>): Promise<TSelect | null> {
+    const [result] = await db
+      .update(this.table)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(
+        eq(this.table.id, id),
+        isNull(this.table.deletedAt)
+      ))
+      .returning();
+    
+    return result || null;
+  }
+
+  /**
+   * Soft delete record
+   */
+  async delete(id: string): Promise<boolean> {
+    const [result] = await db
+      .update(this.table)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(this.table.id, id),
+        isNull(this.table.deletedAt)
+      ))
+      .returning({ id: this.table.id });
+    
+    return !!result;
+  }
+}
+```
+
+### Service Implementation Pattern
+
+<CodeGroup>
+```typescript User Schema
+import { pgTable, uuid, varchar, timestamp } from 'drizzle-orm/pg-core';
+import { InferSelectModel, InferInsertModel } from 'drizzle-orm';
+
+// User schema definition
+export const users = pgTable('users', {
+  ...baseColumns,
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  password: varchar('password', { length: 255 }).notNull(),
+  firstName: varchar('first_name', { length: 100 }).notNull(),
+  lastName: varchar('last_name', { length: 100 }).notNull(),
+  role: varchar('role', { length: 50 }).default('user').notNull(),
+  organizationId: uuid('organization_id').references(() => organizations.id),
+  lastLoginAt: timestamp('last_login_at')
+});
+
+export type User = InferSelectModel<typeof users>;
+export type CreateUser = InferInsertModel<typeof users>;
+```
+
+```typescript User Service
+export class UserService extends BaseService<typeof users, User, CreateUser> {
+  constructor() {
+    super(users);
+  }
+
+  /**
+   * Find user by email with type safety
+   */
+  async findByEmail(email: string): Promise<User | null> {
+    const [result] = await db
+      .select()
+      .from(users)
+      .where(and(
+        eq(users.email, email),
+        isNull(users.deletedAt)
+      ));
+    
+    return result || null;
+  }
+
+  /**
+   * Find users by role with organization data
+   */
+  async findByRoleWithOrganization(role: string) {
+    return await db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        role: users.role,
+        organization: {
+          id: organizations.id,
+          name: organizations.name
+        }
+      })
+      .from(users)
+      .leftJoin(organizations, eq(users.organizationId, organizations.id))
+      .where(and(
+        eq(users.role, role),
+        isNull(users.deletedAt),
+        isNull(organizations.deletedAt)
+      ))
+      .orderBy(desc(users.createdAt));
+  }
+
+  /**
+   * Create user with hashed password
+   */
+  async createUser(userData: CreateUser & { password: string }): Promise<User> {
+    const hashedPassword = await bcrypt.hash(userData.password, 12);
+    
+    return await this.create({
+      ...userData,
+      password: hashedPassword
+    });
+  }
+}
+```
+</CodeGroup>
+
+## 🔒 Type Safety & Security Standards
+
+### Type-Safe Queries with Drizzle
+
+<CodeGroup>
+```typescript Good Examples
+// ✅ GOOD: Type-safe queries with compile-time validation
+async findByEmail(email: string): Promise<User | null> {
+  const [result] = await db
+    .select()
+    .from(users)
+    .where(and(
+      eq(users.email, email),
+      isNull(users.deletedAt)
+    ));
+  
+  return result || null;
+}
+
+// ✅ GOOD: Type-safe partial updates
+async updateUserProfile(id: string, data: Pick<CreateUser, 'firstName' | 'lastName'>) {
+  return await db
+    .update(users)
+    .set({ 
+      ...data, 
+      updatedAt: new Date() 
+    })
+    .where(and(
+      eq(users.id, id),
+      isNull(users.deletedAt)
+    ))
+    .returning();
+}
+```
+
+```typescript Bad Examples
+// ❌ BAD: Using raw SQL loses type safety
+async findByEmailUnsafe(email: string) {
+  return await db.execute(sql`SELECT * FROM users WHERE email = ${email}`); // No type safety!
+}
+```
+</CodeGroup>
+
+### Schema Validation
+
+```typescript
+import { z } from 'zod';
+
+// Schema validation for API inputs
+export const createUserSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  firstName: z.string().min(1).max(100),
+  lastName: z.string().min(1).max(100),
+  role: z.enum(['user', 'admin', 'superadmin']).default('user'),
+  organizationId: z.string().uuid().optional()
+});
+
+export const updateUserSchema = createUserSchema.partial().omit({ password: true });
+
+// Usage in service layer
+export class UserService extends BaseService<typeof users, User, CreateUser> {
+  async createUser(data: unknown): Promise<User> {
+    const validatedData = createUserSchema.parse(data);
+    const hashedPassword = await bcrypt.hash(validatedData.password, 12);
+    
+    return await this.create({
+      ...validatedData,
+      password: hashedPassword
+    });
+  }
+}
+```
+
+## 🗄️ Drizzle Kit Migration System
+
+### Project Structure
+
+```
+src/
+├── schema/
+│   ├── index.ts              # Export all schemas
+│   ├── users.ts              # User table schema
+│   ├── organizations.ts      # Organization table schema
+│   ├── roles.ts              # Roles and permissions
+│   └── refresh-tokens.ts     # Auth tokens
+├── migrations/               # Generated migration files
+│   ├── 0000_initial.sql
+│   ├── 0001_add_users.sql
+│   └── meta/
+│       ├── _journal.json
+│       └── 0000_snapshot.json
+├── lib/
+│   └── db.ts                 # Database connection
+└── drizzle.config.ts         # Drizzle Kit configuration
+```
+
+### Drizzle Configuration
+
+<CodeGroup>
+```typescript drizzle.config.ts
+import type { Config } from 'drizzle-kit';
+
+export default {
+  schema: './src/schema/index.ts',
+  out: './src/migrations',
+  driver: 'pg',
+  dbCredentials: {
+    connectionString: process.env.DATABASE_URL!,
+  },
+  verbose: true,
+  strict: true,
+} satisfies Config;
+```
+
+```typescript Schema Definition
+// src/schema/users.ts
+import { pgTable, uuid, varchar, timestamp, index } from 'drizzle-orm/pg-core';
+import { organizations } from './organizations';
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  password: varchar('password', { length: 255 }).notNull(),
+  firstName: varchar('first_name', { length: 100 }).notNull(),
+  lastName: varchar('last_name', { length: 100 }).notNull(),
+  role: varchar('role', { length: 50 }).default('user').notNull(),
+  organizationId: uuid('organization_id').references(() => organizations.id),
+  lastLoginAt: timestamp('last_login_at'),
+  deletedAt: timestamp('deleted_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (table) => ({
+  // Indexes for performance
+  emailIdx: index('users_email_idx').on(table.email).where(sql`deleted_at IS NULL`),
+  roleIdx: index('users_role_idx').on(table.role).where(sql`deleted_at IS NULL`),
+  orgIdx: index('users_org_idx').on(table.organizationId).where(sql`deleted_at IS NULL`),
+  deletedAtIdx: index('users_deleted_at_idx').on(table.deletedAt),
+}));
+
+// Type exports
+export type User = InferSelectModel<typeof users>;
+export type CreateUser = InferInsertModel<typeof users>;
+```
+</CodeGroup>
+
+### Migration Commands
+
+<Tabs>
+  <Tab title="Development">
+    ```bash
+    # Generate migration from schema changes
+    npm run db:generate
+    
+    # Push schema changes to database (development)
+    npm run db:push
+    
+    # View current schema
+    npm run db:introspect
+    ```
+  </Tab>
+  
+  <Tab title="Production">
+    ```bash
+    # Apply migrations to database (production)
+    npm run db:migrate
+    
+    # Drop database (development only)
+    npm run db:drop
+    ```
+  </Tab>
+  
+  <Tab title="Utilities">
+    ```bash
+    # Open Drizzle Studio for visual database management
+    npm run db:studio
+    ```
+  </Tab>
+</Tabs>
+
+### Package.json Scripts
+
+```json
+{
+  "scripts": {
+    "db:generate": "drizzle-kit generate:pg",
+    "db:push": "drizzle-kit push:pg", 
+    "db:migrate": "tsx src/migrate.ts",
+    "db:introspect": "drizzle-kit introspect:pg",
+    "db:studio": "drizzle-kit studio",
+    "db:drop": "drizzle-kit drop"
+  }
+}
+```
+
+### Migration Runner
+
+<CodeGroup>
+```typescript Migration Runner
+// src/migrate.ts
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { db, connection } from './lib/db';
+
+async function main() {
+  console.log('🏃 Running migrations...');
+  
+  await migrate(db, { 
+    migrationsFolder: './src/migrations' 
+  });
+  
+  console.log('✅ Migrations completed!');
+  await connection.end();
+}
+
+main().catch((err) => {
+  console.error('❌ Migration failed:', err);
+  process.exit(1);
+});
+```
+
+```typescript Seed Data Pattern
+// src/seed.ts
+import { db } from './lib/db';
+import { users, organizations, roles } from './schema';
+
+export async function seedDatabase() {
+  console.log('🌱 Seeding database...');
+
+  // Insert default roles
+  const defaultRoles = await db
+    .insert(roles)
+    .values([
+      { name: 'superadmin', description: 'Root user with full system access' },
+      { name: 'admin', description: 'Organization administrator with limited scope' },
+      { name: 'user', description: 'Regular user with basic permissions' }
+    ])
+    .onConflictDoNothing()
+    .returning();
+
+  // Insert default organization
+  const [defaultOrg] = await db
+    .insert(organizations)
+    .values({
+      name: 'Default Organization',
+      description: 'Default organization for system setup'
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  // Insert super admin user
+  const [superAdmin] = await db
+    .insert(users)
+    .values({
+      email: 'admin@skyguard.com',
+      password: '$2b$12$...', // Pre-hashed password
+      firstName: 'Super',
+      lastName: 'Admin',
+      role: 'superadmin',
+      organizationId: defaultOrg.id
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  console.log('✅ Database seeded successfully!');
+  return { defaultRoles, defaultOrg, superAdmin };
+}
+```
+</CodeGroup>
+
+## 🔧 Database Connection Configuration
+
+### Database Setup with Drizzle
+
+```typescript
+// src/lib/db.ts
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import * as schema from '@/schema';
+
+// Create PostgreSQL connection pool
+export const connection = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  max: parseInt(process.env.DB_POOL_MAX || '20'),
+  min: parseInt(process.env.DB_POOL_MIN || '5'),
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000'),
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT || '10000'),
+});
+
+// Create Drizzle database instance with schema
+export const db = drizzle(connection, { 
+  schema,
+  logger: process.env.NODE_ENV === 'development'
+});
+
+// Connection health check
+export async function checkDatabaseConnection(): Promise<boolean> {
+  try {
+    await connection.query('SELECT 1');
+    return true;
+  } catch (error) {
+    console.error('Database connection failed:', error);
+    return false;
+  }
+}
+
+// Graceful shutdown
+export async function closeDatabaseConnection(): Promise<void> {
+  await connection.end();
+}
+```
+
+### Environment Configuration
+
+```typescript
+// src/lib/env.ts
+import { z } from 'zod';
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  DATABASE_URL: z.string().url(),
+  DB_POOL_MAX: z.string().transform(Number).default('20'),
+  DB_POOL_MIN: z.string().transform(Number).default('5'),
+  DB_IDLE_TIMEOUT: z.string().transform(Number).default('30000'),
+  DB_CONNECTION_TIMEOUT: z.string().transform(Number).default('10000'),
+});
+
+export const env = envSchema.parse(process.env);
+```
+
+## 📈 Performance Guidelines
+
+### Query Optimization
+
+```typescript
+import { sql, eq, and, or, inArray, desc, asc } from 'drizzle-orm';
+
+// ✅ GOOD: Use indexed columns in WHERE clauses
+export class UserService {
+  async findActiveUsersByRole(role: string): Promise<User[]> {
+    return await db
+      .select()
+      .from(users)
+      .where(and(
+        eq(users.role, role),
+        isNull(users.deletedAt)
+      ))
+      .orderBy(desc(users.createdAt));
+  }
+
+  // ✅ GOOD: Efficient pagination with cursor-based approach
+  async findPaginatedUsers(options: {
+    cursor?: string;
+    limit?: number;
+    role?: string;
+  }): Promise<{ data: User[]; nextCursor?: string }> {
+    const { cursor, limit = 10, role } = options;
+    
+    const conditions = [isNull(users.deletedAt)];
+    
+    if (role) {
+      conditions.push(eq(users.role, role));
+    }
+    
+    if (cursor) {
+      conditions.push(sql`${users.createdAt} < ${cursor}`);
+    }
+
+    const data = await db
+      .select()
+      .from(users)
+      .where(and(...conditions))
+      .orderBy(desc(users.createdAt))
+      .limit(limit + 1);
+
+    const hasNext = data.length > limit;
+    const results = hasNext ? data.slice(0, limit) : data;
+    const nextCursor = hasNext ? results[results.length - 1].createdAt.toISOString() : undefined;
+
+    return { data: results, nextCursor };
+  }
+
+  // ✅ GOOD: Efficient joins with selected fields
+  async findUsersWithOrganizations() {
+    return await db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        organization: {
+          id: organizations.id,
+          name: organizations.name
+        }
+      })
+      .from(users)
+      .leftJoin(organizations, eq(users.organizationId, organizations.id))
+      .where(and(
+        isNull(users.deletedAt),
+        isNull(organizations.deletedAt)
+      ));
+  }
+
+  // ✅ GOOD: Batch operations for better performance
+  async updateMultipleUsers(userIds: string[], data: Partial<CreateUser>) {
+    return await db
+      .update(users)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(
+        inArray(users.id, userIds),
+        isNull(users.deletedAt)
+      ))
+      .returning();
+  }
+}
+```
+
+### Index Definition in Schema
+
+```typescript
+// src/schema/users.ts
+export const users = pgTable('users', {
+  // ... column definitions
+}, (table) => ({
+  // Single column indexes
+  emailIdx: index('users_email_idx').on(table.email)
+    .where(sql`deleted_at IS NULL`),
+  
+  // Composite indexes for common query patterns
+  roleOrgIdx: index('users_role_org_idx')
+    .on(table.role, table.organizationId)
+    .where(sql`deleted_at IS NULL`),
+  
+  // Partial indexes for performance
+  activeUsersIdx: index('users_active_idx')
+    .on(table.createdAt, table.role)
+    .where(sql`deleted_at IS NULL`),
+  
+  // Text search index for full-text search
+  nameSearchIdx: index('users_name_search_idx')
+    .using('gin', sql`to_tsvector('english', first_name || ' ' || last_name)`),
+}));
+```
+
+### Connection Pooling Best Practices
+
+```typescript
+// Optimal pool configuration for different environments
+const poolConfig = {
+  development: {
+    max: 5,
+    min: 1,
+    idleTimeoutMillis: 30000,
+  },
+  production: {
+    max: 20,
+    min: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+  },
+  test: {
+    max: 2,
+    min: 1,
+    idleTimeoutMillis: 1000,
+  }
+};
+
+// Use prepared statements for frequently executed queries
+const findUserByEmailStmt = db
+  .select()
+  .from(users)
+  .where(eq(users.email, sql.placeholder('email')))
+  .prepare();
+
+export const findUserByEmail = (email: string) => 
+  findUserByEmailStmt.execute({ email });
+```
+
+## 🔄 Transaction Management
+
+### Service Layer Transactions
+
+```typescript
+import { db } from '@/lib/db';
+import { users, organizations } from '@/schema';
+
+export class AuthService {
+  /**
+   * Create organization with admin user in a single transaction
+   */
+  async createOrganization(orgData: CreateOrganizationInput): Promise<ApiResponse<{
+    organization: Organization;
+    admin: User;
+  }>> {
+    try {
+      const result = await db.transaction(async (tx) => {
+        // Create organization first
+        const [organization] = await tx
+          .insert(organizations)
+          .values({
+            name: orgData.name,
+            description: orgData.description,
+          })
+          .returning();
+
+        // Create admin user with organization reference
+        const hashedPassword = await bcrypt.hash(orgData.adminPassword, 12);
+        
+        const [admin] = await tx
+          .insert(users)
+          .values({
+            email: orgData.adminEmail,
+            password: hashedPassword,
+            firstName: orgData.adminFirstName,
+            lastName: orgData.adminLastName,
+            role: 'admin',
+            organizationId: organization.id,
+          })
+          .returning();
+
+        // Update organization with admin reference
+        const [updatedOrganization] = await tx
+          .update(organizations)
+          .set({ 
+            adminId: admin.id,
+            updatedAt: new Date()
+          })
+          .where(eq(organizations.id, organization.id))
+          .returning();
+
+        return { organization: updatedOrganization, admin };
+      });
+
+      return {
+        success: true,
+        data: result,
+        message: 'Organization created successfully',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to create organization',
+      };
+    }
+  }
+}
+```
+
+### Transaction Best Practices
+
+<AccordionGroup>
+  <Accordion title="Keep Transactions Short">
+    ```typescript
+    // ✅ GOOD: Keep transactions short and focused
+    async createUserWithProfile(userData: CreateUserData): Promise<User> {
+      return await db.transaction(async (tx) => {
+        const [user] = await tx
+          .insert(users)
+          .values(userData.user)
+          .returning();
+
+        await tx
+          .insert(userProfiles)
+          .values({
+            ...userData.profile,
+            userId: user.id
+          });
+
+        return user;
+      });
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Handle Retries Gracefully">
+    ```typescript
+    // ✅ GOOD: Handle transaction errors gracefully
+    async updateUserWithRetry(id: string, data: Partial<CreateUser>): Promise<User | null> {
+      const maxRetries = 3;
+      let lastError: Error;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await db.transaction(async (tx) => {
+            const [user] = await tx
+              .update(users)
+              .set({ ...data, updatedAt: new Date() })
+              .where(and(
+                eq(users.id, id),
+                isNull(users.deletedAt)
+              ))
+              .returning();
+
+            return user;
+          });
+        } catch (error) {
+          lastError = error as Error;
+          
+          // Only retry on serialization failures
+          if (error.code === '40001' && attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+            continue;
+          }
+          
+          throw error;
+        }
+      }
+
+      throw lastError!;
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Avoid Long-Running Transactions">
+    ```typescript
+    // ❌ BAD: Long-running transactions can cause deadlocks
+    async badLongTransaction() {
+      return await db.transaction(async (tx) => {
+        // Don't do heavy computations inside transactions
+        await expensiveComputation();
+        
+        // Don't make external API calls inside transactions
+        await fetch('https://external-api.com/data');
+        
+        // This can hold locks too long
+        await tx.insert(users).values(someData);
+      });
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## ✅ Drizzle ORM Checklist
+
+<Tip>
+Use these checklists to ensure quality database implementation:
+</Tip>
+
+### Before Creating New Tables
+- [ ] Follow naming conventions (camelCase for TypeScript, snake_case for database)
+- [ ] Include standard columns (id, deletedAt, createdAt, updatedAt)
+- [ ] Define proper foreign key relationships with `references()`
+- [ ] Create appropriate indexes in schema definition
+- [ ] Add TypeScript type exports (`InferSelectModel`, `InferInsertModel`)
+- [ ] Write Drizzle migration with `drizzle-kit generate`
+
+### Before Writing Queries
+- [ ] Use Drizzle's type-safe query builder
+- [ ] Implement proper error handling with try-catch
+- [ ] Consider performance implications (use `select()` with specific fields)
+- [ ] Test with large datasets
+- [ ] Validate input with Zod schemas
+- [ ] Use prepared statements for frequently executed queries
+
+### Service Implementation
+- [ ] Extend BaseService when appropriate
+- [ ] Implement proper TypeScript types from schema
+- [ ] Use consistent naming patterns (camelCase)
+- [ ] Include comprehensive JSDoc documentation
+- [ ] Handle edge cases (null checks, soft deletes)
+- [ ] Implement efficient pagination (cursor-based when possible)
+- [ ] Use transactions for multi-step operations
+- [ ] Add proper caching strategies where needed
+
+### Schema Definition Best Practices
+- [ ] Use appropriate column types (`uuid()`, `varchar()`, `timestamp()`, etc.)
+- [ ] Define indexes within schema using table callback
+- [ ] Use partial indexes with `where()` clauses for soft deletes
+- [ ] Export proper TypeScript types
+- [ ] Add table relationships with proper foreign keys
+- [ ] Consider adding unique constraints where needed
+
+### Migration Best Practices
+- [ ] Use descriptive migration names
+- [ ] Test migrations on development data first
+- [ ] Include both forward and rollback strategies
+- [ ] Document breaking changes in migration comments
+- [ ] Use `drizzle-kit push` for development, `migrate` for production
+- [ ] Keep migrations atomic and reversible
+
+This database architecture ensures type safety, performance, and maintainability while leveraging the full power of Drizzle ORM for our PostgreSQL database.

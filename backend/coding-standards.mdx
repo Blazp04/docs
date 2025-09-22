@@ -1,0 +1,596 @@
+---
+title: "Coding Standards"
+description: "TypeScript conventions, formatting rules, and code quality standards for the SkyGuard backend"
+---
+
+# Coding Standards
+
+This guide establishes TypeScript conventions, formatting rules, and code quality standards for the SkyGuard backend. Following these standards ensures consistency, maintainability, and reliability across the entire codebase.
+
+## 🎯 TypeScript Standards
+
+### Type Safety Rules
+
+<CodeGroup>
+```typescript Good Example
+// ✅ GOOD: Explicit types for function parameters and returns
+export async function createUser(userData: CreateUserInput): Promise<ApiResponse<User>> {
+  // implementation
+}
+```
+
+```typescript Bad Example
+// ❌ BAD: Implicit any types
+export async function createUser(userData) {
+  // implementation
+}
+```
+</CodeGroup>
+
+### Interface and Type Definitions
+
+```typescript
+// ✅ GOOD: Use interfaces for object shapes
+export interface User {
+  Id: number;
+  Email: string;
+  FirstName: string;
+  LastName: string;
+  Role: UserRole;
+  IsActive: boolean;
+  CreatedAt: Date;
+  UpdatedAt: Date;
+}
+
+// ✅ GOOD: Use enums for fixed sets of values
+export enum UserRole {
+  SUPER_ADMIN = 'SuperAdmin',
+  ADMIN = 'Admin',
+  USER = 'User'
+}
+
+// ✅ GOOD: Use type unions for simple alternatives
+export type ApiResponseStatus = 'success' | 'error';
+```
+
+### Generic Types
+
+```typescript
+// ✅ GOOD: Generic repository pattern
+export abstract class BaseRepository<T> {
+  async findById(id: number): Promise<T | null> {
+    // implementation
+  }
+}
+
+// ✅ GOOD: Generic response wrapper
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  message?: string;
+  errors?: ApiError[];
+}
+
+// ✅ GOOD: Standardized error structure
+export interface ApiError {
+  errorCode: string;
+  message: string;
+}
+```
+
+## 📝 Naming Conventions
+
+### Variables and Functions
+
+```typescript
+// ✅ GOOD: camelCase for variables and functions
+const userService = new UserService();
+const isAuthenticated = await authService.validateToken(token);
+
+async function getUserById(id: number): Promise<User | null> {
+  return userRepository.findById(id);
+}
+```
+
+### Classes and Interfaces
+
+```typescript
+// ✅ GOOD: PascalCase for classes and interfaces
+export class AuthService {
+  // implementation
+}
+
+export interface CreateUserInput {
+  Email: string;
+  Password: string;
+  FirstName: string;
+  LastName: string;
+}
+```
+
+### Constants
+
+```typescript
+// ✅ GOOD: SCREAMING_SNAKE_CASE for module-level constants
+export const DEFAULT_PAGE_SIZE = 10;
+export const MAX_LOGIN_ATTEMPTS = 5;
+export const JWT_EXPIRATION_TIME = '15m';
+```
+
+### File and Folder Names
+
+| Type | Convention | Examples |
+|------|------------|----------|
+| Classes | PascalCase | `UserService.ts`, `AuthMiddleware.ts` |
+| Functions/handlers | camelCase | `userHandler.ts`, `authHandler.ts` |
+| Utilities | camelCase | `validation.ts`, `encryption.ts` |
+| Configuration | camelCase | `database.ts`, `server.ts` |
+
+## 🔧 Code Organization
+
+### Function Structure
+
+```typescript
+// ✅ GOOD: Well-structured function with clear flow
+export async function createUser(userData: CreateUserInput): Promise<ApiResponse<User>> {
+  try {
+    // 1. Validation
+    const validationResult = validateUserInput(userData);
+    if (!validationResult.isValid) {
+      return {
+        success: false,
+        errors: validationResult.errors,
+      };
+    }
+
+    // 2. Business logic
+    const existingUser = await userRepository.findByEmail(userData.Email);
+    if (existingUser) {
+      return {
+        success: false,
+        errors: [
+          {
+            errorCode: 'EMAIL_ALREADY_EXISTS',
+            message: 'Email address is already registered',
+          },
+        ],
+      };
+    }
+
+    // 3. Data processing
+    const hashedPassword = await hashPassword(userData.Password);
+    const userToCreate = {
+      ...userData,
+      Password: hashedPassword,
+    };
+
+    // 4. Database operation
+    const user = await userRepository.createUser(userToCreate);
+
+    // 5. Response
+    return {
+      success: true,
+      data: user,
+      message: 'User created successfully',
+    };
+  } catch (error) {
+    // 6. Error handling
+    return {
+      success: false,
+      errors: [
+        {
+          errorCode: 'INTERNAL_ERROR',
+          message: error instanceof Error ? error.message : 'Failed to create user',
+        },
+      ],
+    };
+  }
+}
+```
+
+### Class Structure
+
+```typescript
+// ✅ GOOD: Organized class with clear sections
+export class AuthService {
+  private userRepository: UserRepository;
+  private refreshTokenRepository: RefreshTokenRepository;
+
+  constructor() {
+    this.userRepository = new UserRepository();
+    this.refreshTokenRepository = new RefreshTokenRepository();
+  }
+
+  // Public methods first
+  async login(loginData: LoginInput): Promise<ApiResponse<LoginResponse>> {
+    // implementation
+  }
+
+  async refreshToken(token: string): Promise<ApiResponse<TokenResponse>> {
+    // implementation
+  }
+
+  // Private methods last
+  private generateAccessToken(user: User, permissions: string[]): string {
+    // implementation
+  }
+
+  private async generateRefreshToken(userId: number): Promise<string> {
+    // implementation
+  }
+}
+```
+
+## 📚 Documentation Standards
+
+### Function Documentation
+
+```typescript
+/**
+ * Creates a new user with hashed password and role assignment
+ * 
+ * @param userData - User creation data including email, password, and personal info
+ * @returns Promise resolving to API response with created user or error
+ * 
+ * @example
+ * ```typescript
+ * const result = await authService.createUser({
+ *   Email: 'user@example.com',
+ *   Password: 'SecurePass123!',
+ *   FirstName: 'John',
+ *   LastName: 'Doe'
+ * });
+ * ```
+ */
+export async function createUser(userData: CreateUserInput): Promise<ApiResponse<User>> {
+  // implementation
+}
+```
+
+### Interface Documentation
+
+```typescript
+/**
+ * User creation input data transfer object
+ * Used for API requests when creating new users
+ */
+export interface CreateUserInput {
+  /** User's email address (must be unique) */
+  Email: string;
+  
+  /** Raw password (will be hashed before storage) */
+  Password: string;
+  
+  /** User's first name */
+  FirstName: string;
+  
+  /** User's last name */
+  LastName: string;
+  
+  /** User role (defaults to 'User' if not specified) */
+  Role?: UserRole;
+  
+  /** Organization ID (required for Admin and User roles) */
+  OrganizationId?: number;
+}
+```
+
+## 🎨 Code Formatting
+
+### Prettier Configuration
+
+```json
+{
+  "semi": true,
+  "trailingComma": "es5",
+  "singleQuote": true,
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false
+}
+```
+
+### ESLint Rules (Recommended)
+
+```json
+{
+  "extends": [
+    "@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/explicit-function-return-type": "warn",
+    "@typescript-eslint/no-unused-vars": "error",
+    "prefer-const": "error",
+    "no-var": "error"
+  }
+}
+```
+
+## 🛡️ Error Handling Standards
+
+### Error Code Conventions
+
+```typescript
+// ✅ GOOD: Use descriptive error codes in UPPER_SNAKE_CASE
+export const ERROR_CODES = {
+  // Validation errors (4xx)
+  VALIDATION_ERROR: 'VALIDATION_ERROR',
+  EMAIL_ALREADY_EXISTS: 'EMAIL_ALREADY_EXISTS',
+  INVALID_EMAIL_FORMAT: 'INVALID_EMAIL_FORMAT',
+  PASSWORD_TOO_SHORT: 'PASSWORD_TOO_SHORT',
+  REQUIRED_FIELD_MISSING: 'REQUIRED_FIELD_MISSING',
+  
+  // Authentication errors (401)
+  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
+  TOKEN_EXPIRED: 'TOKEN_EXPIRED',
+  TOKEN_INVALID: 'TOKEN_INVALID',
+  
+  // Authorization errors (403)
+  INSUFFICIENT_PERMISSIONS: 'INSUFFICIENT_PERMISSIONS',
+  ACCESS_DENIED: 'ACCESS_DENIED',
+  
+  // Resource errors (404)
+  USER_NOT_FOUND: 'USER_NOT_FOUND',
+  RESOURCE_NOT_FOUND: 'RESOURCE_NOT_FOUND',
+  
+  // Server errors (5xx)
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  DATABASE_ERROR: 'DATABASE_ERROR',
+  EXTERNAL_SERVICE_ERROR: 'EXTERNAL_SERVICE_ERROR',
+} as const;
+```
+
+### Validation Error Handling
+
+<CodeGroup>
+```typescript Validation Function
+export interface ValidationResult {
+  isValid: boolean;
+  errors: ApiError[];
+}
+
+export function validateUserInput(userData: CreateUserInput): ValidationResult {
+  const errors: ApiError[] = [];
+
+  // Email validation
+  if (!userData.Email) {
+    errors.push({
+      errorCode: ERROR_CODES.REQUIRED_FIELD_MISSING,
+      message: 'Email is required',
+    });
+  } else if (!isValidEmail(userData.Email)) {
+    errors.push({
+      errorCode: ERROR_CODES.INVALID_EMAIL_FORMAT,
+      message: 'Email format is invalid',
+    });
+  }
+
+  // Password validation
+  if (!userData.Password) {
+    errors.push({
+      errorCode: ERROR_CODES.REQUIRED_FIELD_MISSING,
+      message: 'Password is required',
+    });
+  } else {
+    const passwordErrors = validatePassword(userData.Password);
+    errors.push(...passwordErrors);
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+  };
+}
+```
+
+```typescript Password Validation
+export function validatePassword(password: string): ApiError[] {
+  const errors: ApiError[] = [];
+
+  if (password.length < 8) {
+    errors.push({
+      errorCode: ERROR_CODES.PASSWORD_TOO_SHORT,
+      message: 'Password must contain at least 8 characters',
+    });
+  }
+
+  if (!/[A-Z]/.test(password)) {
+    errors.push({
+      errorCode: ERROR_CODES.PASSWORD_MISSING_UPPERCASE,
+      message: 'Password must contain at least one uppercase letter',
+    });
+  }
+
+  if (!/[a-z]/.test(password)) {
+    errors.push({
+      errorCode: ERROR_CODES.PASSWORD_MISSING_LOWERCASE,
+      message: 'Password must contain at least one lowercase letter',
+    });
+  }
+
+  if (!/\d/.test(password)) {
+    errors.push({
+      errorCode: ERROR_CODES.PASSWORD_MISSING_NUMBER,
+      message: 'Password must contain at least one number',
+    });
+  }
+
+  return errors;
+}
+```
+</CodeGroup>
+
+### Service Layer Error Handling
+
+```typescript
+// ✅ GOOD: Consistent error response pattern with error codes
+export async function createUser(userData: CreateUserInput): Promise<ApiResponse<User>> {
+  try {
+    // Validation with detailed errors
+    const validationResult = validateUserInput(userData);
+    if (!validationResult.isValid) {
+      return {
+        success: false,
+        errors: validationResult.errors,
+      };
+    }
+
+    // Business logic validation
+    const existingUser = await userRepository.findByEmail(userData.Email);
+    if (existingUser) {
+      return {
+        success: false,
+        errors: [
+          {
+            errorCode: ERROR_CODES.EMAIL_ALREADY_EXISTS,
+            message: 'Email address is already registered',
+          },
+        ],
+      };
+    }
+
+    // Success response
+    const user = await userRepository.createUser(userData);
+    return {
+      success: true,
+      data: user,
+      message: 'User created successfully',
+    };
+  } catch (error) {
+    // Unexpected errors
+    return {
+      success: false,
+      errors: [
+        {
+          errorCode: ERROR_CODES.INTERNAL_ERROR,
+          message: error instanceof Error ? error.message : 'Unknown error occurred',
+        },
+      ],
+    };
+  }
+}
+```
+
+## 🔄 Import/Export Standards
+
+### Import Order
+
+```typescript
+// 1. Node.js built-in modules
+import crypto from 'crypto';
+import path from 'path';
+
+// 2. External libraries
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import bcrypt from 'bcrypt';
+
+// 3. Internal modules (relative imports)
+import { UserRepository } from '../../../core/database/repositories/UserRepository';
+import { AuthService } from '../../../core/services/AuthService';
+
+// 4. Types and interfaces
+import {
+  User,
+  CreateUserInput,
+  ApiResponse,
+  UserRole,
+} from '../../../core/database/authTypes';
+```
+
+### Export Patterns
+
+<Tabs>
+  <Tab title="Named Exports">
+    ```typescript
+    // ✅ GOOD: Named exports for utilities and services
+    export class AuthService { }
+    export const authUtils = { };
+    export interface User { }
+    ```
+  </Tab>
+  
+  <Tab title="Default Exports">
+    ```typescript
+    // ✅ GOOD: Default export for route modules only
+    export default async function authRoutes(fastify: FastifyInstance) {
+      // route definitions
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Re-exports">
+    ```typescript
+    // ✅ GOOD: Re-exports in index files
+    export * from './AuthService';
+    export * from './UserService';
+    ```
+  </Tab>
+</Tabs>
+
+## ✅ Code Quality Checklist
+
+<Tip>
+Use these checklists to ensure code quality before committing and during code reviews.
+</Tip>
+
+### Before Committing
+- [ ] All TypeScript errors resolved
+- [ ] No `any` types used (unless absolutely necessary)
+- [ ] Functions have explicit return types
+- [ ] Proper error handling implemented
+- [ ] Documentation added for public APIs
+- [ ] Imports organized correctly
+- [ ] Code formatted with Prettier
+- [ ] No console.log statements (use proper logging)
+- [ ] Variables and functions have descriptive names
+- [ ] Complex logic is commented
+
+### Review Criteria
+- [ ] Follows established patterns
+- [ ] Maintains consistency with existing code
+- [ ] Handles edge cases appropriately
+- [ ] Performance considerations addressed
+- [ ] Security best practices followed
+- [ ] Tests included (when applicable)
+
+## 📋 HTTP Status Code Mapping
+
+Use this helper function to map error codes to appropriate HTTP status codes:
+
+```typescript
+function getHttpStatusFromErrors(errors: ApiError[]): number {
+  if (!errors.length) return 400;
+
+  const errorCodes = errors.map(e => e.errorCode);
+  
+  if (errorCodes.some(code => 
+    [ERROR_CODES.INVALID_CREDENTIALS, ERROR_CODES.TOKEN_EXPIRED, ERROR_CODES.TOKEN_INVALID].includes(code)
+  )) {
+    return 401; // Unauthorized
+  }
+  
+  if (errorCodes.some(code => 
+    [ERROR_CODES.INSUFFICIENT_PERMISSIONS, ERROR_CODES.ACCESS_DENIED].includes(code)
+  )) {
+    return 403; // Forbidden
+  }
+  
+  if (errorCodes.some(code => 
+    [ERROR_CODES.USER_NOT_FOUND, ERROR_CODES.RESOURCE_NOT_FOUND].includes(code)
+  )) {
+    return 404; // Not Found
+  }
+  
+  if (errorCodes.some(code => 
+    [ERROR_CODES.INTERNAL_ERROR, ERROR_CODES.DATABASE_ERROR].includes(code)
+  )) {
+    return 500; // Internal Server Error
+  }
+  
+  return 400; // Bad Request (default for validation errors)
+}
+```
+
+Following these coding standards ensures a consistent, maintainable, and reliable codebase that scales effectively as the project grows.

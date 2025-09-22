@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "SkyGuard Documentation",
   "colors": {
     "primary": "#16A34A",
     "light": "#07C983",
@@ -11,38 +11,19 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Project Overview",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
               "index",
-              "quickstart",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
               "development"
-            ]
-          },
-          {
-            "group": "Customization",
-            "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
             ]
           }
         ]
@@ -77,21 +58,13 @@
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
+        "openapi": "http://localhost:3001/docs/json",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Introduction",
             "pages": [
               "api-reference/introduction"
-            ]
-          },
-          {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
             ]
           }
         ]
@@ -100,14 +73,14 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
+          "anchor": "Backend Repository",
+          "href": "https://github.com/your-org/skyguard-backend",
+          "icon": "github"
         },
         {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "API Reference",
+          "href": "http://localhost:3001/docs",
+          "icon": "code"
         }
       ]
     }
@@ -119,14 +92,14 @@
   "navbar": {
     "links": [
       {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "label": "GitHub",
+        "href": "https://github.com/your-org/skyguard-backend"
       }
     ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
+      "type": "button", 
+      "label": "Get Started",
+      "href": "https://docs.yourdomain.com/quickstart"
     }
   },
   "contextual": {
@@ -143,9 +116,8 @@
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/your-org/skyguard-backend",
+      "linkedin": "https://linkedin.com/company/your-company"
     }
   }
 }

@@ -1,33 +1,114 @@
 ---
-title: 'Introduction'
-description: 'Example section for showcasing API endpoints'
+title: 'SkyGuard API Reference'
+description: 'Interactive API documentation for the SkyGuard backend platform'
 ---
 
-<Note>
-  If you're not looking to build API reference documentation, you can delete
-  this section by removing the api-reference folder.
-</Note>
+# SkyGuard API Reference
 
-## Welcome
+Welcome to the SkyGuard API documentation. This interactive reference is automatically generated from our OpenAPI specification and provides comprehensive details about all available endpoints, request/response formats, and authentication methods.
 
-There are two ways to build API documentation: [OpenAPI](https://mintlify.com/docs/api-playground/openapi/setup) and [MDX components](https://mintlify.com/docs/api-playground/mdx/configuration). For the starter kit, we are using the following OpenAPI specification.
+## Live API Integration
+
+This documentation is directly connected to the SkyGuard backend and displays real-time API specifications. When the SkyGuard backend is running locally, the documentation will automatically load the latest API definitions.
 
 <Card
-  title="Plant Store Endpoints"
-  icon="leaf"
-  href="https://github.com/mintlify/starter/blob/main/api-reference/openapi.json"
+  title="Start Development Server"
+  icon="rocket"
+  href="/quickstart"
 >
-  View the OpenAPI specification file
+  Follow the quickstart guide to run SkyGuard locally and see live API docs
 </Card>
+
+## API Overview
+
+The SkyGuard API provides:
+
+- **User Management**: Create, update, and manage user accounts
+- **Authentication**: JWT-based authentication with refresh token rotation
+- **Health Monitoring**: System health and status endpoints
+- **Security**: Role-based access control and secure endpoints
+
+## Base URL
+
+When running locally, the API is available at:
+
+```
+http://localhost:3001/api/v1
+```
 
 ## Authentication
 
-All API endpoints are authenticated using Bearer tokens and picked up from the specification file.
+All protected API endpoints require authentication using Bearer tokens. Include your JWT token in the Authorization header:
+
+```bash
+Authorization: Bearer <your-jwt-token>
+```
+
+Authentication tokens are obtained through the login endpoint and include:
+- **Access Token**: Short-lived token for API requests (15 minutes)
+- **Refresh Token**: Long-lived token for obtaining new access tokens (7 days)
+
+## Alternative Documentation
+
+In addition to this Mintlify documentation, you can also access:
+
+<CardGroup cols={2}>
+  <Card
+    title="Swagger UI"
+    icon="swagger"
+    href="http://localhost:3001/docs"
+  >
+    Traditional Swagger interface for API testing
+  </Card>
+  <Card
+    title="Scalar API Reference"
+    icon="scalar"
+    href="http://localhost:3001/reference"
+  >
+    Modern API reference interface with interactive examples
+  </Card>
+</CardGroup>
+
+## Response Format
+
+All API responses follow a consistent format:
 
 ```json
-"security": [
-  {
-    "bearerAuth": []
+{
+  "success": boolean,
+  "data": object | array,
+  "message": string,
+  "meta": {
+    "timestamp": "ISO 8601 datetime",
+    "version": "API version"
   }
-]
+}
 ```
+
+## Error Handling
+
+Error responses include detailed information to help with debugging:
+
+```json
+{
+  "success": false,
+  "message": "Error description",
+  "error": {
+    "code": "ERROR_CODE",
+    "details": "Additional error details"
+  },
+  "meta": {
+    "timestamp": "ISO 8601 datetime",
+    "version": "API version"
+  }
+}
+```
+
+<Info>
+The API endpoints below are automatically generated from the OpenAPI specification. Make sure the SkyGuard backend is running to see the complete API documentation.
+
+**Note**: If the API endpoints don't load automatically, you may need to verify the OpenAPI JSON endpoint URL in your `docs.json` file. Common endpoints include:
+- `http://localhost:3001/docs/json`
+- `http://localhost:3001/docs/yaml` 
+- `http://localhost:3001/openapi.json`
+</Info>

@@ -1,53 +1,179 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick Start Guide"
+description: "Get up and running with SkyGuard development in minutes"
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
+Get your SkyGuard development environment up and running quickly with this step-by-step guide.
 
-### Step 1: Set up your local environment
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+- **Node.js** (version 18 or higher)
+- **npm** or **yarn** package manager
+- **Docker** and **Docker Compose**
+- **Git** for version control
+- **Visual Studio Code** (recommended) or your preferred code editor
+
+## Development Setup
+
+### Step 1: Clone the Repository
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
+  <Accordion icon="github" title="Clone SkyGuard Backend">
+    ```bash
+    git clone https://github.com/your-org/skyguard-backend.git
+    cd skyguard-backend
+    ```
   </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
+  <Accordion icon="download" title="Install Dependencies">
+    ```bash
+    npm install
+    # or
+    yarn install
+    ```
   </Accordion>
 </AccordionGroup>
 
-### Step 2: Deploy your changes
+### Step 2: Environment Configuration
 
 <AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Accordion icon="gear" title="Setup Environment Variables">
+    1. Copy the example environment file:
+    ```bash
+    cp .env.example .env
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
+    2. Update the `.env` file with your local configuration:
+    ```bash
+    NODE_ENV=development
+    PORT=3001
+    DATABASE_URL=postgresql://postgres:postgres@localhost:5432/skyguard_dev
+    JWT_SECRET=your-development-secret-key-32-chars-min
+    ```
+    
+    <Warning>
+    Make sure to use a secure JWT secret in production environments.
+    </Warning>
+  </Accordion>
+  <Accordion icon="database" title="Start Database Services">
+    Use Docker Compose to start the required services:
+    ```bash
+    docker-compose up -d postgres
+    ```
+    
+    This will start:
+    - PostgreSQL database on port 5432
+    - Adminer database management tool on port 8080
+  </Accordion>
+</AccordionGroup>
+
+### Step 3: Database Setup
+
+<AccordionGroup>
+  <Accordion icon="play" title="Run Database Migrations">
+    ```bash
+    npm run db:migrate
+    # or
+    yarn db:migrate
+    ```
+  </Accordion>
+  <Accordion icon="seedling" title="Seed Initial Data (Optional)">
+    ```bash
+    npm run db:seed
+    # or
+    yarn db:seed
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Step 4: Start Development Server
+
+<Accordion icon="rocket" title="Launch the Application">
+  ```bash
+  npm run dev
+  # or
+  yarn dev
+  ```
+  
+  Your SkyGuard backend will be available at:
+  - **API Server**: `http://localhost:3001`
+  - **API Documentation**: `http://localhost:3001/docs`
+  - **Health Check**: `http://localhost:3001/api/v1/health`
+  
+  <Tip>
+  The development server automatically restarts when you make changes to the code.
+  </Tip>
 </Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Verify Your Setup
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+### Test the API
 
-### Step 3: Go live
+<CodeGroup>
+```bash cURL
+curl http://localhost:3001/api/v1/health
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
+```javascript Fetch
+fetch('http://localhost:3001/api/v1/health')
+  .then(response => response.json())
+  .then(data => console.log(data));
+```
+
+```bash HTTPie
+http GET localhost:3001/api/v1/health
+```
+</CodeGroup>
+
+You should receive a response like:
+```json
+{
+  "success": true,
+  "message": "SkyGuard API is healthy",
+  "timestamp": "2025-09-22T10:30:00.000Z",
+  "version": "1.0.0"
+}
+```
+
+### Access API Documentation
+
+Visit `http://localhost:3001/docs` to explore the interactive API documentation powered by Scalar.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Architecture Overview"
+    icon="building"
+    href="/backend/architecture-overview"
+  >
+    Learn about the backend architecture and design patterns.
+  </Card>
+  <Card
+    title="Development Guidelines"
+    icon="code"
+    href="/backend/coding-standards"
+  >
+    Follow our coding standards and best practices.
+  </Card>
+  <Card
+    title="Database Architecture"
+    icon="database"
+    href="/backend/database-architecture"
+  >
+    Understand the database design and ORM usage.
+  </Card>
+  <Card
+    title="Security Guidelines"
+    icon="shield-check"
+    href="/backend/security-guidelines"
+  >
+    Implement security best practices in your development.
+  </Card>
+</CardGroup>
   2. Your docs will update and be live in moments!
 </Accordion>
 
